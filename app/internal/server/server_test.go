@@ -5,11 +5,16 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/PKSonlem/incident-copilot/app/internal/config"
 	"github.com/PKSonlem/incident-copilot/app/internal/server"
 )
 
 func TestLiveAndReady(t *testing.T) {
-	ts := httptest.NewServer(server.New())
+	h, err := server.New(config.Config{})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+	ts := httptest.NewServer(h)
 	defer ts.Close()
 
 	for _, path := range []string{"/live", "/ready"} {

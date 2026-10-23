@@ -1,0 +1,14 @@
+# Пример конфигурации гейтвея. Секреты здесь не хранятся: только имена переменных окружения.
+redis:
+  addr: redis:6379
+providers:
+  - name: local
+    kind: openai
+    base_url: http://host.docker.internal:7382
+models:
+  - name: local-small
+    provider: local
+    provider_model: agent
+clients:
+  - name: agent
+    key_env: GATEWAY_CLIENT_KEY

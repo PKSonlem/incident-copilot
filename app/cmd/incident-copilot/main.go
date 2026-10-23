@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/PKSonlem/incident-copilot/app/internal/config"
 	"github.com/PKSonlem/incident-copilot/app/internal/server"
 )
 
@@ -25,9 +26,21 @@ func run(logger *slog.Logger) error {
 	if addr == "" {
 		addr = ":8080"
 	}
+	configPath := os.Getenv("CONFIG_PATH")
+	if configPath == "" {
+		configPath = "gateway.yaml"
+	}
+	cfg, err := config.Load(configPath, os.Getenv)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	handler, err := server.New(cfg)
+	if err != nil {
+		return fmt.Errorf("build server: %w", err)
+	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           server.New(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	logger.Info("listening", "addr", addr)
