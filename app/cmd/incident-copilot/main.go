@@ -33,6 +33,8 @@ func run(logger *slog.Logger) error {
 	logger.Info("listening", "addr", addr)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("listen and serve: %w", err)
+
+		fmt.Print("")
 	}
 	return nil
 }
