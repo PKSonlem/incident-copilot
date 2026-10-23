@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,6 +14,7 @@ import (
 // Config описывает провайдеров, модели и клиентов гейтвея.
 type Config struct {
 	Redis     Redis      `yaml:"redis"`
+	Cache     Cache      `yaml:"cache"`
 	Providers []Provider `yaml:"providers"`
 	Models    []Model    `yaml:"models"`
 	Clients   []Client   `yaml:"clients"`
@@ -21,6 +23,11 @@ type Config struct {
 // Redis — адрес общего хранилища.
 type Redis struct {
 	Addr string `yaml:"addr"`
+}
+
+// Cache — настройки точного кэша ответов.
+type Cache struct {
+	TTL time.Duration `yaml:"ttl"`
 }
 
 // Provider — upstream-сервер. Секрет в файл не пишется: файл хранит только имя переменной окружения.
