@@ -59,36 +59,39 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
+	if cfg.Redis.Addr == "" {
+		return Config{}, errors.New("redis.addr is required")
+	}
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
 		if p.APIKeyEnv == "" {
 			continue
 		}
-		if p.APIKey = getenv(p.APIKeyEnv); p.APIKey == "" {
-			return Config{}, fmt.Errorf("provider %q: env %s is empty", p.Name, p.APIKeyEnv)
+		if p.APIKey, err = secretFromEnv(getenv, p.APIKeyEnv); err != nil {
+			return Config{}, fmt.Errorf("provider %q: %w", p.Name, err)
 		}
 	}
 	for i := range cfg.Clients {
 		c := &cfg.Clients[i]
-		if c.KeyEnv == "" {
-			return Config{}, fmt.Errorf("client %q: key_env is required", c.Name)
+		if c.Key, err = secretFromEnv(getenv, c.KeyEnv); err != nil {
+			return Config{}, fmt.Errorf("client %q: %w", c.Name, err)
 		}
-		if c.Key = getenv(c.KeyEnv); c.Key == "" {
-			return Config{}, fmt.Errorf("client %q: env %s is empty", c.Name, c.KeyEnv)
-		}
-	}
-	return cfg, validate(cfg)
-}
-
-func validate(cfg Config) error {
-	known := map[string]bool{}
-	for _, p := range cfg.Providers {
-		known[p.Name] = true
 	}
 	for _, m := range cfg.Models {
-		if !known[m.Provider] {
-			return errors.New("model " + m.Name + ": unknown provider " + m.Provider)
+		if m.Name == "" || m.Provider == "" || m.ProviderModel == "" {
+			return Config{}, fmt.Errorf("model %q: name, provider and provider_model are required", m.Name)
 		}
 	}
-	return nil
+	return cfg, nil
+}
+
+func secretFromEnv(getenv func(string) string, name string) (string, error) {
+	if name == "" {
+		return "", errors.New("env variable name is not set")
+	}
+	v := getenv(name)
+	if v == "" {
+		return "", fmt.Errorf("env %s is empty", name)
+	}
+	return v, nil
 }

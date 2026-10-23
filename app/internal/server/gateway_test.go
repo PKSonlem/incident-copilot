@@ -26,6 +26,7 @@ const (
 // fakeProvider — фейковый OpenAI-совместимый сервер, который подменяет llama-swap.
 type fakeProvider struct {
 	*httptest.Server
+	status   int // 0 означает 200
 	mu       sync.Mutex
 	requests []recordedRequest
 }
@@ -49,6 +50,9 @@ func newFakeProvider(t *testing.T, reply string) *fakeProvider {
 		fp.requests = append(fp.requests, recordedRequest{r.URL.Path, r.Header.Get("Authorization"), body})
 		fp.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if fp.status != 0 {
+			w.WriteHeader(fp.status)
+		}
 		if _, err := w.Write([]byte(`{"id":"chatcmpl-fake","object":"chat.completion","model":"qwen-local",` +
 			`"choices":[{"index":0,"message":{"role":"assistant","content":"` + reply + `"},"finish_reason":"stop"}],` +
 			`"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}`)); err != nil {
@@ -173,6 +177,16 @@ func assertOpenAIError(t *testing.T, resp *http.Response, body []byte, wantStatu
 	if err := json.Unmarshal(body, &e); err != nil {
 		t.Fatalf("тело ошибки не JSON: %v; body: %s", err, body)
 	}
+	var keys struct {
+		Error map[string]json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &keys); err == nil {
+		for _, k := range []string{"param", "code"} {
+			if _, ok := keys.Error[k]; !ok {
+				t.Errorf("в ошибке нет поля %q (OpenAI-формат): %s", k, body)
+			}
+		}
+	}
 	if e.Error.Message == "" || e.Error.Type == "" {
 		t.Errorf("ошибка не в OpenAI-формате (нужны error.message и error.type): %s", body)
 	}
@@ -258,6 +272,59 @@ func TestUnsupportedContentTypesAreRejectedWith400(t *testing.T) {
 	if n := len(fp.received()); n != 0 {
 		t.Errorf("запрос с неподдерживаемым контентом дошёл до провайдера (%d)", n)
 	}
+}
+
+func TestMalformedContentShapesAreRejectedWith400(t *testing.T) {
+	fp := newFakeProvider(t, "pong")
+	ts := newGateway(t, fp)
+
+	for name, content := range map[string]string{
+		"объект": `{"type":"image_url"}`,
+		"число":  `42`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, body := post(t, ts, clientKey,
+				`{"model":"local-small","messages":[{"role":"user","content":`+content+`}]}`)
+			assertOpenAIError(t, resp, body, http.StatusBadRequest)
+		})
+	}
+}
+
+func TestStreamingRequestIsRejectedUntilSupported(t *testing.T) {
+	fp := newFakeProvider(t, "pong")
+	ts := newGateway(t, fp)
+
+	resp, body := post(t, ts, clientKey,
+		`{"model":"local-small","stream":true,"messages":[{"role":"user","content":"ping"}]}`)
+
+	assertOpenAIError(t, resp, body, http.StatusBadRequest)
+	if n := len(fp.received()); n != 0 {
+		t.Errorf("потоковый запрос дошёл до провайдера (%d)", n)
+	}
+}
+
+func TestProviderClientErrorIsPassedThrough(t *testing.T) {
+	fp := newFakeProvider(t, "pong")
+	fp.status = http.StatusTooManyRequests
+	ts := newGateway(t, fp)
+
+	resp, _ := post(t, ts, clientKey,
+		`{"model":"local-small","messages":[{"role":"user","content":"ping"}]}`)
+
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Errorf("status %d, want 429 от провайдера", resp.StatusCode)
+	}
+}
+
+func TestProviderServerErrorBecomes502(t *testing.T) {
+	fp := newFakeProvider(t, "pong")
+	fp.status = http.StatusInternalServerError
+	ts := newGateway(t, fp)
+
+	resp, body := post(t, ts, clientKey,
+		`{"model":"local-small","messages":[{"role":"user","content":"ping"}]}`)
+
+	assertOpenAIError(t, resp, body, http.StatusBadGateway)
 }
 
 func TestTextContentPartsAreAccepted(t *testing.T) {
