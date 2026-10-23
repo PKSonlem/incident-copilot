@@ -5,7 +5,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/PKSonlem/incident-copilot/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/server"
 )
 
 func TestLiveAndReady(t *testing.T) {

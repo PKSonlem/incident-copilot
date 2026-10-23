@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/PKSonlem/incident-copilot/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/server"
 )
 
 func main() {

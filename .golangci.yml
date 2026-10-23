@@ -35,13 +35,13 @@ linters:
         - pattern: ^(print|println)$
           msg: вывод в stdout только через slog
         - pattern: ^os\.(Stdout|Stderr)$
-          msg: os.Stdout допустим только в точке входа (cmd/)
+          msg: os.Stdout допустим только в точке входа (app/cmd/)
         - pattern: ^log\.
           msg: логирование только через slog
   exclusions:
     rules:
       # Точка входа вправе подключать stdout к логгеру.
-      - path: ^cmd/
+      - path: ^app/cmd/
         linters: [forbidigo]
       - path: _test\.go
         linters: [wrapcheck]
