@@ -141,8 +141,9 @@ func (g *gateway) streamCompletion(w http.ResponseWriter, r *http.Request, rt ro
 			flusher.Flush()
 		}
 		if rerr != nil {
-			if !errors.Is(rerr, io.EOF) {
+			if !errors.Is(rerr, io.EOF) && r.Context().Err() == nil {
 				slog.WarnContext(r.Context(), "read provider stream", "error", rerr)
+				writeStreamError(w, flusher, r)
 			}
 			return
 		}
@@ -253,4 +254,20 @@ func writeError(w http.ResponseWriter, e *apiError) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		slog.Warn("write error response", "error", err)
 	}
+}
+
+// writeStreamError завершает поток SSE-событием с ошибкой: статус ответа уже отправлен, повтор невозможен.
+func writeStreamError(w http.ResponseWriter, flusher http.Flusher, r *http.Request) {
+	event, err := json.Marshal(map[string]any{"error": map[string]any{
+		"message": "provider stream failed", "type": errAPI, "param": nil, "code": nil,
+	}})
+	if err != nil {
+		slog.ErrorContext(r.Context(), "encode stream error", "error", err)
+		return
+	}
+	if _, err := w.Write(append(append([]byte("data: "), event...), '\n', '\n')); err != nil {
+		slog.WarnContext(r.Context(), "write stream error", "error", err)
+		return
+	}
+	flusher.Flush()
 }

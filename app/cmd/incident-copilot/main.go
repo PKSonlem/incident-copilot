@@ -59,10 +59,15 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("listen and serve: %w", err)
 	case <-ctx.Done():
 	}
+	stop() // повторный сигнал снова действует по умолчанию и завершает процесс сразу
 	logger.Info("shutting down: waiting for in-flight requests")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
+		// Не дождались: обрываем оставшиеся соединения, чтобы процесс не завис.
+		if cerr := srv.Close(); cerr != nil {
+			logger.Warn("close server", "error", cerr)
+		}
 		return fmt.Errorf("shutdown: %w", err)
 	}
 	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {

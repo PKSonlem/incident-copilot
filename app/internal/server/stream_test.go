@@ -177,3 +177,34 @@ func TestClientCancelReachesProvider(t *testing.T) {
 		t.Fatal("запрос к провайдеру не отменён после отключения клиента")
 	}
 }
+
+// Сбой посреди потока: провайдер обрывает соединение после первого чанка. Клиент должен получить
+// SSE-событие с ошибкой, а не молча обрезанный поток.
+func TestMidStreamProviderFailureEndsWithErrorEvent(t *testing.T) {
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if _, err := w.Write([]byte("data: " + sseChunk1 + "\n\n")); err != nil {
+			t.Errorf("fake provider write: %v", err)
+		}
+		w.(http.Flusher).Flush() //nolint:errcheck // httptest отдаёт Flusher
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(broken.Close)
+	ts := newStreamGateway(t, &streamingProvider{Server: broken})
+
+	resp := openStream(context.Background(), t, ts)
+	sc := bufio.NewScanner(resp.Body)
+
+	if got := nextData(t, sc); got != sseChunk1 {
+		t.Fatalf("первый чанк %q, want %q", got, sseChunk1)
+	}
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(nextData(t, sc)), &e); err != nil || e.Error.Message == "" || e.Error.Type == "" {
+		t.Errorf("после сбоя ждём SSE-событие с ошибкой в OpenAI-формате, got %+v (err %v)", e, err)
+	}
+}
