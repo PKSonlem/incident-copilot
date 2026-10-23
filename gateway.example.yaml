@@ -12,3 +12,6 @@ models:
 clients:
   - name: agent
     key_env: GATEWAY_CLIENT_KEY
+    rate_limit:
+      requests: 60
+      window: 1m

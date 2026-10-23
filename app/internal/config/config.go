@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -44,6 +45,14 @@ type Client struct {
 	Name   string `yaml:"name"`
 	KeyEnv string `yaml:"key_env"`
 	Key    string `yaml:"-"`
+	// RateLimit ограничивает число запросов ключа; нулевое значение означает «без ограничения».
+	RateLimit RateLimit `yaml:"rate_limit"`
+}
+
+// RateLimit — не больше Requests запросов за окно Window.
+type RateLimit struct {
+	Requests int           `yaml:"requests"`
+	Window   time.Duration `yaml:"window"`
 }
 
 // Load читает файл и подставляет секреты через getenv. Неизвестные поля (в том числе
@@ -75,6 +84,11 @@ func Load(path string, getenv func(string) string) (Config, error) {
 		c := &cfg.Clients[i]
 		if c.Key, err = secretFromEnv(getenv, c.KeyEnv); err != nil {
 			return Config{}, fmt.Errorf("client %q: %w", c.Name, err)
+		}
+	}
+	for _, c := range cfg.Clients {
+		if rl := c.RateLimit; rl.Requests < 0 || (rl.Requests > 0 && rl.Window <= 0) {
+			return Config{}, fmt.Errorf("client %q: rate_limit needs requests > 0 and window > 0", c.Name)
 		}
 	}
 	for _, m := range cfg.Models {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
@@ -21,6 +22,7 @@ const (
 	errAuthentication = "authentication_error"
 	errNotFound       = "not_found_error"
 	errAPI            = "api_error"
+	errRateLimit      = "rate_limit_error"
 )
 
 const maxBodyBytes = 4 << 20
@@ -33,6 +35,7 @@ type route struct {
 type gateway struct {
 	routes  map[string]route
 	clients []config.Client
+	limiter *rateLimiter
 }
 
 // New возвращает обработчик гейтвея: live, ready и /v1/chat/completions.
@@ -45,7 +48,7 @@ func New(cfg config.Config) (http.Handler, error) {
 		}
 		providers[pc.Name] = p
 	}
-	g := &gateway{routes: map[string]route{}, clients: cfg.Clients}
+	g := &gateway{routes: map[string]route{}, clients: cfg.Clients, limiter: newRateLimiter(cfg.Redis.Addr)}
 	for _, m := range cfg.Models {
 		p, found := providers[m.Provider]
 		if !found {
@@ -74,8 +77,20 @@ type apiError struct {
 func (e *apiError) Error() string { return e.msg }
 
 func (g *gateway) chatCompletions(w http.ResponseWriter, r *http.Request) {
-	if !g.authorized(r) {
+	client, found := g.authorize(r)
+	if !found {
 		writeError(w, &apiError{http.StatusUnauthorized, errAuthentication, "invalid or missing API key"})
+		return
+	}
+	allowed, retryAfter, err := g.limiter.allow(r.Context(), client)
+	switch {
+	case err != nil:
+		slog.ErrorContext(r.Context(), "rate limiter", "error", err)
+		writeError(w, &apiError{http.StatusServiceUnavailable, errAPI, "rate limiter is unavailable"})
+		return
+	case !allowed:
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfterSeconds(retryAfter)))
+		writeError(w, &apiError{http.StatusTooManyRequests, errRateLimit, "rate limit exceeded"})
 		return
 	}
 	rt, body, stream, aerr := g.prepare(w, r)
@@ -190,20 +205,22 @@ func isTrue(raw json.RawMessage) bool {
 	return json.Unmarshal(raw, &b) == nil && b
 }
 
-func (g *gateway) authorized(r *http.Request) bool {
+// authorize возвращает клиента, чей ключ передан в заголовке Authorization.
+func (g *gateway) authorize(r *http.Request) (config.Client, bool) {
 	key, found := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !found || key == "" {
-		return false
+		return config.Client{}, false
 	}
 	// Цикл намеренно не прерывается на первом совпадении: время ответа не должно
 	// зависеть от того, какой по счёту ключ подошёл.
-	match := false
+	var match config.Client
+	matched := false
 	for _, c := range g.clients {
 		if subtle.ConstantTimeCompare([]byte(key), []byte(c.Key)) == 1 {
-			match = true
+			match, matched = c, true
 		}
 	}
-	return match
+	return match, matched
 }
 
 // checkContent допускает content в виде строки, null или массива текстовых частей.
