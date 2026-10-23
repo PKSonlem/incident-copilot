@@ -34,6 +34,8 @@ linters:
           msg: вывод в stdout только через slog
         - pattern: ^(print|println)$
           msg: вывод в stdout только через slog
+        - pattern: ^fmt\.Fprint(f|ln)?$
+          msg: запись через fmt.Fprint* обходит запрет stdout; используй slog или w.Write
         - pattern: ^os\.(Stdout|Stderr)$
           msg: os.Stdout допустим только в точке входа (app/cmd/)
         - pattern: ^log\.
