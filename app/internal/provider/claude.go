@@ -10,22 +10,23 @@ import (
 	"strings"
 )
 
-const (
-	anthropicVersion = "2023-06-01"
-	// defaultMaxTokens подставляется, если клиент не задал max_tokens: Anthropic требует его в каждом запросе.
-	defaultMaxTokens = 4096
-)
+const anthropicVersion = "2023-06-01"
 
 // Claude вызывает Anthropic Messages API, переводя запрос и ответ из формата OpenAI и обратно.
 type Claude struct {
 	baseURL string
 	apiKey  string
 	client  *http.Client
+	// defaultMaxTokens подставляется, если клиент не задал max_tokens: Anthropic требует его в каждом запросе.
+	defaultMaxTokens int
 }
 
 // NewClaude создаёт провайдера Claude.
-func NewClaude(baseURL, apiKey string) *Claude {
-	return &Claude{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, client: &http.Client{}}
+func NewClaude(baseURL, apiKey string, defaultMaxTokens int) *Claude {
+	return &Claude{
+		baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, client: &http.Client{},
+		defaultMaxTokens: defaultMaxTokens,
+	}
 }
 
 // Complete переводит запрос в формат Anthropic и возвращает ответ в формате OpenAI. Ошибки Claude
@@ -76,7 +77,7 @@ func (c *Claude) Stream(ctx context.Context, body []byte) (Stream, error) {
 }
 
 func (c *Claude) do(ctx context.Context, body []byte, stream bool) (*http.Response, bool, error) {
-	payload, includeUsage, err := translateRequest(body, stream)
+	payload, includeUsage, err := translateRequest(body, stream, c.defaultMaxTokens)
 	if err != nil {
 		return nil, false, err
 	}

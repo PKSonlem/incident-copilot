@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/PKSonlem/incident-copilot/app/internal/chatwire"
 )
 
 // sseTranslator читает SSE Anthropic из upstream и отдаёт SSE OpenAI. Работает через pipe, поэтому
@@ -41,21 +43,26 @@ func (t *sseTranslator) Close() error {
 	return err
 }
 
+// streamState — что известно о потоке к текущему событию.
 type streamState struct {
 	id           string
 	model        string
-	created      int64
+	created      json.RawMessage
 	inputTokens  int
 	outputTokens int
 }
 
 func translateStream(r io.Reader, w io.Writer, includeUsage bool) error {
 	br := bufio.NewReader(r)
-	st := streamState{created: time.Now().Unix()}
+	created, err := json.Marshal(time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("encode created: %w", err)
+	}
+	state := streamState{created: created}
 	for {
 		line, rerr := br.ReadString('\n')
 		if payload, ok := strings.CutPrefix(strings.TrimRight(line, "\r\n"), "data: "); ok {
-			done, err := st.handle([]byte(payload), w, includeUsage)
+			done, err := state.handle([]byte(payload), w, includeUsage)
 			if err != nil || done {
 				return err
 			}
@@ -95,23 +102,23 @@ func (s *streamState) handle(payload []byte, w io.Writer, includeUsage bool) (bo
 	case "message_start":
 		s.id, s.model = "chatcmpl-"+ev.Message.ID, ev.Message.Model
 		s.inputTokens = ev.Message.Usage.InputTokens
-		return false, s.chunk(w, map[string]any{"role": "assistant", "content": ""}, nil, nil)
+		return false, s.writeChunk(w, map[string]any{"role": "assistant", "content": ""}, nil)
 	case "content_block_delta":
 		if ev.Delta.Type != "text_delta" {
 			return false, nil
 		}
-		return false, s.chunk(w, map[string]any{"content": ev.Delta.Text}, nil, nil)
+		return false, s.writeChunk(w, map[string]any{"content": ev.Delta.Text}, nil)
 	case "message_delta":
 		s.outputTokens = ev.Usage.OutputTokens
 		reason := finishReason(ev.Delta.StopReason)
-		return false, s.chunk(w, map[string]any{}, &reason, nil)
+		return false, s.writeChunk(w, map[string]any{}, &reason)
 	case "message_stop":
 		if includeUsage {
-			if err := s.chunk(w, nil, nil, openAIUsage(s.inputTokens, s.outputTokens)); err != nil {
+			if err := s.writeUsageChunk(w, openAIUsage(s.inputTokens, s.outputTokens)); err != nil {
 				return false, err
 			}
 		}
-		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+		if _, err := io.WriteString(w, chatwire.DoneEvent); err != nil {
 			return false, fmt.Errorf("write done: %w", err)
 		}
 		return true, nil
@@ -122,27 +129,27 @@ func (s *streamState) handle(payload []byte, w io.Writer, includeUsage bool) (bo
 	}
 }
 
-// chunk пишет один chat.completion.chunk. При usage != nil чанк без choices, как у OpenAI.
-func (s *streamState) chunk(w io.Writer, delta map[string]any, finish *string, usage map[string]int) error {
-	choices := []any{}
-	if usage == nil {
-		choice := map[string]any{"index": 0, "delta": delta, "finish_reason": nil}
-		if finish != nil {
-			choice["finish_reason"] = *finish
-		}
-		choices = append(choices, choice)
+// writeChunk пишет один chat.completion.chunk с одним choice. finish nil: finish_reason null.
+func (s *streamState) writeChunk(w io.Writer, delta map[string]any, finish *string) error {
+	var finishReason any
+	if finish != nil {
+		finishReason = *finish
 	}
-	c := map[string]any{
-		"id": s.id, "object": "chat.completion.chunk", "created": s.created, "model": s.model, "choices": choices,
-	}
-	if usage != nil {
-		c["usage"] = usage
-	}
-	data, err := json.Marshal(c)
+	return s.write(w, chatwire.Chunk{Choices: []map[string]any{chatwire.Choice(0, delta, finishReason)}})
+}
+
+// writeUsageChunk пишет чанк с usage без choices, как OpenAI при include_usage.
+func (s *streamState) writeUsageChunk(w io.Writer, usage map[string]int) error {
+	return s.write(w, chatwire.Chunk{Usage: usage})
+}
+
+func (s *streamState) write(w io.Writer, chunk chatwire.Chunk) error {
+	chunk.ID, chunk.Model, chunk.Created = s.id, s.model, s.created
+	data, err := chunk.SSE()
 	if err != nil {
-		return fmt.Errorf("encode chunk: %w", err)
+		return fmt.Errorf("build chunk: %w", err)
 	}
-	if _, err := w.Write(append(append([]byte("data: "), data...), '\n', '\n')); err != nil {
+	if _, err := w.Write(data); err != nil {
 		return fmt.Errorf("write chunk: %w", err)
 	}
 	return nil
