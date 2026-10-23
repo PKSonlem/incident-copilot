@@ -93,7 +93,7 @@ func (g *gateway) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &apiError{http.StatusTooManyRequests, errRateLimit, "rate limit exceeded"})
 		return
 	}
-	rt, body, aerr := g.prepare(w, r)
+	rt, body, stream, aerr := g.prepare(w, r)
 	if aerr != nil {
 		writeError(w, aerr)
 		return
