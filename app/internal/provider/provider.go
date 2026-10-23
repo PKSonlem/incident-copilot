@@ -10,6 +10,9 @@ import (
 // KindOpenAI — любой OpenAI-совместимый сервер (llama-server, llama-swap).
 const KindOpenAI = "openai"
 
+// KindClaude — Anthropic Messages API.
+const KindClaude = "claude"
+
 // Response — ответ провайдера на запрос chat completions.
 type Response struct {
 	Status int
@@ -34,6 +37,8 @@ func New(kind, baseURL, apiKey string) (Provider, error) {
 	switch kind {
 	case KindOpenAI:
 		return NewOpenAI(baseURL, apiKey), nil
+	case KindClaude:
+		return NewClaude(baseURL, apiKey), nil
 	default:
 		return nil, fmt.Errorf("unsupported provider kind %q", kind)
 	}
