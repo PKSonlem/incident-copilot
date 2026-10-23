@@ -2,16 +2,28 @@ package provider
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/PKSonlem/incident-copilot/app/internal/chatwire"
 )
+
+// errToolsUnsupported — ответ на любой запрос с инструментами, пока провайдер Claude их не переводит.
+// TODO(#6): перевести tools, tool_choice, роль tool и assistant.tool_calls в формат Anthropic.
+var errToolsUnsupported = &ClientError{Message: "tools not supported for this provider yet"}
 
 // translateRequest переводит тело chat completions (OpenAI) в тело Anthropic Messages.
 // Второй результат: просил ли клиент usage в потоке (stream_options.include_usage).
-func translateRequest(body []byte, stream bool) ([]byte, bool, error) {
+//
+// Поля запроса, которых у Anthropic нет или которые здесь не переводятся (n, presence_penalty,
+// frequency_penalty, seed, response_format, user, metadata и т. п.), намеренно отбрасываются:
+// они не меняют смысл запроса настолько, чтобы отказывать клиенту, а OpenAI-клиенты шлют их
+// по умолчанию. Инструменты (tools, tool_choice, functions, роль tool, tool_calls) молча
+// отбрасывать нельзя: ответ был бы неверным, поэтому такой запрос получает ClientError.
+func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, bool, error) {
 	var in struct {
 		Model               string            `json:"model"`
 		Messages            []json.RawMessage `json:"messages"`
@@ -20,12 +32,21 @@ func translateRequest(body []byte, stream bool) ([]byte, bool, error) {
 		Temperature         *float64          `json:"temperature"`
 		TopP                *float64          `json:"top_p"`
 		Stop                json.RawMessage   `json:"stop"`
+		Tools               json.RawMessage   `json:"tools"`
+		ToolChoice          json.RawMessage   `json:"tool_choice"`
+		Functions           json.RawMessage   `json:"functions"`
+		FunctionCall        json.RawMessage   `json:"function_call"`
 		StreamOptions       struct {
 			IncludeUsage bool `json:"include_usage"`
 		} `json:"stream_options"`
 	}
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, false, fmt.Errorf("decode request: %w", err)
+	}
+	for _, field := range []json.RawMessage{in.Tools, in.ToolChoice, in.Functions, in.FunctionCall} {
+		if !chatwire.IsNullOrEmpty(field) {
+			return nil, false, errToolsUnsupported
+		}
 	}
 	out := map[string]any{"model": in.Model, "max_tokens": defaultMaxTokens}
 	switch {
@@ -53,11 +74,17 @@ func translateRequest(body []byte, stream bool) ([]byte, bool, error) {
 	messages := []map[string]any{}
 	for _, raw := range in.Messages {
 		var m struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
+			Role         string          `json:"role"`
+			Content      json.RawMessage `json:"content"`
+			ToolCalls    json.RawMessage `json:"tool_calls"`
+			FunctionCall json.RawMessage `json:"function_call"`
 		}
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return nil, false, fmt.Errorf("decode message: %w", err)
+		}
+		if m.Role == "tool" || m.Role == "function" ||
+			!chatwire.IsNullOrEmpty(m.ToolCalls) || !chatwire.IsNullOrEmpty(m.FunctionCall) {
+			return nil, false, errToolsUnsupported
 		}
 		text, err := contentText(m.Content)
 		if err != nil {
@@ -82,8 +109,7 @@ func translateRequest(body []byte, stream bool) ([]byte, bool, error) {
 
 // contentText приводит content (строка, null или массив текстовых частей) к строке.
 func contentText(raw json.RawMessage) (string, error) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" {
+	if chatwire.IsNullOrEmpty(raw) {
 		return "", nil
 	}
 	var s string
@@ -95,12 +121,12 @@ func contentText(raw json.RawMessage) (string, error) {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", errors.New("unsupported message content")
+		return "", &ClientError{Message: "message content must be a string or an array of text parts"}
 	}
 	var sb strings.Builder
 	for _, p := range parts {
 		if p.Type != "text" {
-			return "", fmt.Errorf("unsupported content type %q", p.Type)
+			return "", &ClientError{Message: fmt.Sprintf("unsupported content type %q: only text is supported", p.Type)}
 		}
 		sb.WriteString(p.Text)
 	}
@@ -108,8 +134,7 @@ func contentText(raw json.RawMessage) (string, error) {
 }
 
 func stopSequences(raw json.RawMessage) ([]string, error) {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" {
+	if chatwire.IsNullOrEmpty(raw) {
 		return nil, nil
 	}
 	var one string
@@ -118,19 +143,25 @@ func stopSequences(raw json.RawMessage) ([]string, error) {
 	}
 	var many []string
 	if err := json.Unmarshal(raw, &many); err != nil {
-		return nil, errors.New("stop must be a string or an array of strings")
+		return nil, &ClientError{Message: "stop must be a string or an array of strings"}
 	}
 	return many, nil
 }
 
-// finishReason переводит stop_reason Anthropic в finish_reason OpenAI.
+// finishReason переводит stop_reason Anthropic в finish_reason OpenAI. Неизвестная причина
+// отдаётся как stop, но попадает в лог, чтобы новая причина не прошла незамеченной.
 func finishReason(stopReason string) string {
 	switch stopReason {
+	case "end_turn", "stop_sequence":
+		return "stop"
 	case "max_tokens":
 		return "length"
 	case "tool_use":
 		return "tool_calls"
+	case "refusal":
+		return "content_filter"
 	default:
+		slog.Warn("unknown anthropic stop_reason, reporting stop", "stop_reason", stopReason)
 		return "stop"
 	}
 }

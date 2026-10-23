@@ -2,7 +2,7 @@
 redis:
   addr: redis:6379
 cache:
-  ttl: 1h # срок жизни записей точного кэша ответов
+  ttl: 1h # срок жизни записей точного кэша ответов (по умолчанию 1h)
 providers:
   - name: local
     kind: openai

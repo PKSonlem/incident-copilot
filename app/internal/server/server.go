@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/PKSonlem/incident-copilot/app/internal/chatwire"
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
 	"github.com/PKSonlem/incident-copilot/app/internal/provider"
 )
@@ -40,7 +41,7 @@ type gateway struct {
 func New(cfg config.Config) (http.Handler, error) {
 	providers := map[string]provider.Provider{}
 	for _, pc := range cfg.Providers {
-		p, err := provider.New(pc.Kind, pc.BaseURL, pc.APIKey)
+		p, err := provider.New(pc.Kind, pc.BaseURL, pc.APIKey, provider.Options{DefaultMaxTokens: pc.EffectiveMaxTokens()})
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", pc.Name, err)
 		}
@@ -49,7 +50,7 @@ func New(cfg config.Config) (http.Handler, error) {
 	g := &gateway{
 		routes:  map[string]route{},
 		clients: cfg.Clients,
-		cache:   newResponseCache(cfg.Redis.Addr, cfg.Cache.TTL),
+		cache:   newResponseCache(cfg.Redis.Addr, cfg.Cache.EffectiveTTL()),
 	}
 	for _, m := range cfg.Models {
 		p, found := providers[m.Provider]
@@ -83,65 +84,64 @@ func (g *gateway) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, &apiError{http.StatusUnauthorized, errAuthentication, "invalid or missing API key"})
 		return
 	}
-	p, aerr := g.prepare(w, r)
+	prep, aerr := g.prepare(w, r)
 	if aerr != nil {
 		writeError(w, aerr)
 		return
 	}
-	rt, body, stream := p.rt, p.body, p.stream
-	if p.cacheKey != "" {
-		if cached, hit := g.cache.get(r.Context(), p.cacheKey); hit {
-			if stream {
-				replayStream(w, r, cached)
-				return
-			}
-			w.Header().Set(cacheHeader, cacheHit)
-			writeJSON(w, r, http.StatusOK, cached)
-			return
-		}
-		w.Header().Set(cacheHeader, cacheMiss)
-	} else {
-		w.Header().Set(cacheHeader, cacheBypass)
-	}
-	if stream {
-		g.streamCompletion(w, r, p)
+	if g.cache.serve(w, r, prep.cache, prep.stream) {
 		return
 	}
-	resp, err := rt.provider.Complete(r.Context(), body)
+	if prep.stream {
+		g.streamCompletion(w, r, prep)
+		return
+	}
+	resp, err := prep.route.provider.Complete(r.Context(), prep.body)
 	switch {
-	case err != nil || resp.Status >= 500 || resp.Status < 200:
+	case err != nil:
+		writeError(w, providerFailure(err))
+	case resp.Status >= 500 || resp.Status < 200:
+		// TODO(#9): различать причины сбоя провайдера для fallback.
 		writeError(w, &apiError{http.StatusBadGateway, errAPI, "provider request failed"})
 	case resp.Status >= 400:
 		// Ошибки клиента (включая 429) провайдер уже оформил в OpenAI-формате: отдаём как есть.
 		writeJSON(w, r, resp.Status, resp.Body)
 	default:
-		if p.cacheKey != "" {
-			g.cache.set(r.Context(), p.cacheKey, resp.Body)
-		}
+		g.cache.store(r.Context(), prep.cache, resp.Body)
 		writeJSON(w, r, http.StatusOK, resp.Body)
 	}
 }
 
+// providerFailure превращает ошибку вызова провайдера в ответ: запрос, который провайдер
+// не поддерживает, это 400, всё остальное 502.
+func providerFailure(err error) *apiError {
+	var clientErr *provider.ClientError
+	if errors.As(err, &clientErr) {
+		return &apiError{http.StatusBadRequest, errInvalidRequest, clientErr.Message}
+	}
+	return &apiError{http.StatusBadGateway, errAPI, "provider request failed"}
+}
+
 // streamCompletion отдаёт клиенту поток SSE от провайдера по мере поступления. Отмена запроса
 // клиентом (r.Context()) прерывает запрос к провайдеру.
-func (g *gateway) streamCompletion(w http.ResponseWriter, r *http.Request, p prepared) {
-	st, err := p.rt.provider.Stream(r.Context(), p.body)
+func (g *gateway) streamCompletion(w http.ResponseWriter, r *http.Request, prep prepared) {
+	upstream, err := prep.route.provider.Stream(r.Context(), prep.body)
 	if err != nil {
-		writeError(w, &apiError{http.StatusBadGateway, errAPI, "provider request failed"})
+		writeError(w, providerFailure(err))
 		return
 	}
 	defer func() {
-		if cerr := st.Body.Close(); cerr != nil {
+		if cerr := upstream.Body.Close(); cerr != nil {
 			slog.WarnContext(r.Context(), "close provider stream", "error", cerr)
 		}
 	}()
-	if st.Status != http.StatusOK {
-		data, rerr := io.ReadAll(st.Body)
-		if rerr != nil || st.Status >= 500 || st.Status < 200 {
+	if upstream.Status != http.StatusOK {
+		data, rerr := io.ReadAll(upstream.Body)
+		if rerr != nil || upstream.Status >= 500 || upstream.Status < 200 {
 			writeError(w, &apiError{http.StatusBadGateway, errAPI, "provider request failed"})
 			return
 		}
-		writeJSON(w, r, st.Status, data)
+		writeJSON(w, r, upstream.Status, data)
 		return
 	}
 	flusher, ok := w.(http.Flusher)
@@ -153,17 +153,12 @@ func (g *gateway) streamCompletion(w http.ResponseWriter, r *http.Request, p pre
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-	var asm *streamAssembler
-	if p.cacheKey != "" {
-		asm = &streamAssembler{}
-	}
+	capture := g.cache.capture(prep.cache)
 	buf := make([]byte, 4096)
 	for {
-		n, rerr := st.Body.Read(buf)
+		n, rerr := upstream.Body.Read(buf)
 		if n > 0 {
-			if asm != nil {
-				asm.feed(buf[:n])
-			}
+			capture.feed(buf[:n])
 			if _, werr := w.Write(buf[:n]); werr != nil {
 				slog.WarnContext(r.Context(), "write stream", "error", werr)
 				return
@@ -171,12 +166,9 @@ func (g *gateway) streamCompletion(w http.ResponseWriter, r *http.Request, p pre
 			flusher.Flush()
 		}
 		if rerr != nil {
-			if errors.Is(rerr, io.EOF) && asm != nil {
-				if completion, ok := asm.completion(); ok {
-					g.cache.set(r.Context(), p.cacheKey, completion)
-				}
-			}
-			if !errors.Is(rerr, io.EOF) && r.Context().Err() == nil {
+			if errors.Is(rerr, io.EOF) {
+				capture.commit(r.Context())
+			} else if r.Context().Err() == nil {
 				slog.WarnContext(r.Context(), "read provider stream", "error", rerr)
 				writeStreamError(w, flusher, r)
 			}
@@ -185,13 +177,12 @@ func (g *gateway) streamCompletion(w http.ResponseWriter, r *http.Request, p pre
 	}
 }
 
-// prepared — проверенный запрос: маршрут, тело для провайдера, признак потока и ключ кэша
-// (пустой, если запрос обходит кэш).
+// prepared — проверенный запрос: маршрут, тело для провайдера, признак потока и решение кэша.
 type prepared struct {
-	rt       route
-	body     []byte
-	stream   bool
-	cacheKey string
+	route  route
+	body   []byte
+	stream bool
+	cache  cachePlan
 }
 
 // prepare читает и проверяет запрос.
@@ -218,7 +209,7 @@ func (g *gateway) prepare(w http.ResponseWriter, r *http.Request) (prepared, *ap
 	if !found {
 		return prepared{}, &apiError{http.StatusNotFound, errNotFound, fmt.Sprintf("model %q not found", model)}
 	}
-	key := cacheKey(req, model)
+	plan := planCache(req, model)
 	req["model"], err = json.Marshal(rt.providerModel)
 	if err != nil {
 		return prepared{}, &apiError{http.StatusInternalServerError, errAPI, "cannot encode request"}
@@ -227,7 +218,7 @@ func (g *gateway) prepare(w http.ResponseWriter, r *http.Request) (prepared, *ap
 	if err != nil {
 		return prepared{}, &apiError{http.StatusInternalServerError, errAPI, "cannot encode request"}
 	}
-	return prepared{rt: rt, body: body, stream: stream, cacheKey: key}, nil
+	return prepared{route: rt, body: body, stream: stream, cache: plan}, nil
 }
 
 func isTrue(raw json.RawMessage) bool {
@@ -263,7 +254,7 @@ func checkContent(rawMessages json.RawMessage) error {
 	for _, m := range messages {
 		trimmed := strings.TrimSpace(string(m.Content))
 		switch {
-		case trimmed == "" || trimmed == "null" || strings.HasPrefix(trimmed, `"`):
+		case chatwire.IsNullOrEmpty(m.Content) || strings.HasPrefix(trimmed, `"`):
 			continue
 		case strings.HasPrefix(trimmed, "["):
 			var parts []struct {
@@ -272,9 +263,9 @@ func checkContent(rawMessages json.RawMessage) error {
 			if err := json.Unmarshal(m.Content, &parts); err != nil {
 				return errors.New("message content parts are malformed")
 			}
-			for _, p := range parts {
-				if p.Type != "text" {
-					return fmt.Errorf("unsupported content type %q: only text is supported", p.Type)
+			for _, part := range parts {
+				if part.Type != "text" {
+					return fmt.Errorf("unsupported content type %q: only text is supported", part.Type)
 				}
 			}
 		default:
