@@ -1,0 +1,49 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - depguard
+    - errcheck
+    - errorlint
+    - forbidigo
+    - govet
+    - wrapcheck
+  settings:
+    depguard:
+      rules:
+        no-agent-frameworks:
+          list-mode: lax
+          deny:
+            - pkg: github.com/tmc/langchaingo
+              desc: ADR 0001 — без агентских фреймворков
+            - pkg: github.com/cloudwego/eino
+              desc: ADR 0001 — без агентских фреймворков
+            - pkg: github.com/firebase/genkit
+              desc: ADR 0001 — без агентских фреймворков
+            - pkg: github.com/langchain-ai
+              desc: ADR 0001 — без агентских фреймворков
+            - pkg: github.com/sashabaranov/go-openai
+              desc: ADR 0001 — провайдеры вызываются напрямую по HTTP
+    errcheck:
+      check-blank: true
+      check-type-assertions: true
+    forbidigo:
+      forbid:
+        - pattern: ^fmt\.(Print|Printf|Println)$
+          msg: вывод в stdout только через slog
+        - pattern: ^(print|println)$
+          msg: вывод в stdout только через slog
+        - pattern: ^fmt\.Fprint(f|ln)?$
+          msg: запись через fmt.Fprint* обходит запрет stdout; используй slog или w.Write
+        - pattern: ^os\.(Stdout|Stderr)$
+          msg: os.Stdout допустим только в точке входа (app/cmd/)
+        - pattern: ^log\.
+          msg: логирование только через slog
+  exclusions:
+    rules:
+      # Точка входа вправе подключать stdout к логгеру.
+      - path: ^app/cmd/
+        linters: [forbidigo]
+      - path: _test\.go
+        linters: [wrapcheck]

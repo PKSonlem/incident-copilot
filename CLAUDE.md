@@ -7,7 +7,7 @@
 - Термины проекта: `GLOSSARY.md`
 - Необратимые решения: `docs/adr/`
 - Спеки: `SPEC-scaffold.md` (слой 0, делается первым), `SPEC-gateway.md` (слой 1)
-- Команда проверки (запусти перед каждым PR): определена в `SPEC-scaffold.md`, имя зафиксировать здесь после реализации
+- Команда проверки (запусти перед каждым PR): `make check` (= `./scripts/check.sh`: go vet, golangci-lint, go test -race). Хук и CI вызывают её же. Включить хук: `make hooks`
 - Локальные модели: сервер `llama-swap` на `localhost:7382`, конфиг `~/models/llama-swap.yaml`. Профили: `research` и `agent` (Qwen3.5-4B, контекст 32k и 16k), `coder` (omnicoder-9B, 16k). Модели медленные, окно маленькое.
 
 ## Agent skills
