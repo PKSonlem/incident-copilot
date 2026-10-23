@@ -11,6 +11,11 @@ services:
   app:
     build: .
     mem_limit: 128m
+    environment:
+      CONFIG_PATH: /etc/gateway/gateway.yaml
+      GATEWAY_CLIENT_KEY: ${GATEWAY_CLIENT_KEY:?задайте GATEWAY_CLIENT_KEY}
+    volumes:
+      - ./gateway.example.yaml:/etc/gateway/gateway.yaml:ro
     ports:
       - "8080:8080"
     depends_on:
