@@ -14,6 +14,7 @@ import (
 // Config описывает провайдеров, модели и клиентов гейтвея.
 type Config struct {
 	Redis     Redis      `yaml:"redis"`
+	Cache     Cache      `yaml:"cache"`
 	Providers []Provider `yaml:"providers"`
 	Models    []Model    `yaml:"models"`
 	Clients   []Client   `yaml:"clients"`
@@ -24,6 +25,25 @@ type Redis struct {
 	Addr string `yaml:"addr"`
 }
 
+// Значения по умолчанию для необязательных настроек.
+const (
+	DefaultCacheTTL        = time.Hour
+	DefaultClaudeMaxTokens = 4096
+)
+
+// Cache — настройки точного кэша ответов.
+type Cache struct {
+	TTL time.Duration `yaml:"ttl"` // не задан: DefaultCacheTTL
+}
+
+// EffectiveTTL возвращает срок жизни записей с учётом значения по умолчанию.
+func (c Cache) EffectiveTTL() time.Duration {
+	if c.TTL <= 0 {
+		return DefaultCacheTTL
+	}
+	return c.TTL
+}
+
 // Provider — upstream-сервер. Секрет в файл не пишется: файл хранит только имя переменной окружения.
 type Provider struct {
 	Name      string `yaml:"name"`
@@ -31,6 +51,17 @@ type Provider struct {
 	BaseURL   string `yaml:"base_url"`
 	APIKeyEnv string `yaml:"api_key_env"`
 	APIKey    string `yaml:"-"`
+	// DefaultMaxTokens подставляется провайдеру Claude, если клиент не задал max_tokens
+	// (Anthropic требует его в каждом запросе). Не задан: DefaultClaudeMaxTokens.
+	DefaultMaxTokens int `yaml:"default_max_tokens"`
+}
+
+// EffectiveMaxTokens возвращает max_tokens по умолчанию с учётом значения по умолчанию.
+func (p Provider) EffectiveMaxTokens() int {
+	if p.DefaultMaxTokens <= 0 {
+		return DefaultClaudeMaxTokens
+	}
+	return p.DefaultMaxTokens
 }
 
 // Model связывает имя модели для клиента с провайдером и именем модели у него.
@@ -71,8 +102,14 @@ func Load(path string, getenv func(string) string) (Config, error) {
 	if cfg.Redis.Addr == "" {
 		return Config{}, errors.New("redis.addr is required")
 	}
+	if cfg.Cache.TTL < 0 {
+		return Config{}, errors.New("cache.ttl must not be negative")
+	}
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
+		if p.DefaultMaxTokens < 0 {
+			return Config{}, fmt.Errorf("provider %q: default_max_tokens must not be negative", p.Name)
+		}
 		if p.APIKeyEnv == "" {
 			continue
 		}
