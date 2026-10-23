@@ -98,6 +98,10 @@ func (g *gateway) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, aerr)
 		return
 	}
+	if stream {
+		g.streamCompletion(w, r, rt, body)
+		return
+	}
 	resp, err := rt.provider.Complete(r.Context(), body)
 	switch {
 	case err != nil || resp.Status >= 500 || resp.Status < 200:
@@ -110,41 +114,90 @@ func (g *gateway) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// prepare читает и проверяет запрос и возвращает маршрут и тело для провайдера.
-func (g *gateway) prepare(w http.ResponseWriter, r *http.Request) (route, []byte, *apiError) {
+// streamCompletion отдаёт клиенту поток SSE от провайдера по мере поступления. Отмена запроса
+// клиентом (r.Context()) прерывает запрос к провайдеру.
+func (g *gateway) streamCompletion(w http.ResponseWriter, r *http.Request, rt route, body []byte) {
+	st, err := rt.provider.Stream(r.Context(), body)
+	if err != nil {
+		writeError(w, &apiError{http.StatusBadGateway, errAPI, "provider request failed"})
+		return
+	}
+	defer func() {
+		if cerr := st.Body.Close(); cerr != nil {
+			slog.WarnContext(r.Context(), "close provider stream", "error", cerr)
+		}
+	}()
+	if st.Status != http.StatusOK {
+		data, rerr := io.ReadAll(st.Body)
+		if rerr != nil || st.Status >= 500 || st.Status < 200 {
+			writeError(w, &apiError{http.StatusBadGateway, errAPI, "provider request failed"})
+			return
+		}
+		writeJSON(w, r, st.Status, data)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, &apiError{http.StatusInternalServerError, errAPI, "streaming is not supported by the server"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	buf := make([]byte, 4096)
+	for {
+		n, rerr := st.Body.Read(buf)
+		if n > 0 {
+			if _, werr := w.Write(buf[:n]); werr != nil {
+				slog.WarnContext(r.Context(), "write stream", "error", werr)
+				return
+			}
+			flusher.Flush()
+		}
+		if rerr != nil {
+			if !errors.Is(rerr, io.EOF) && r.Context().Err() == nil {
+				slog.WarnContext(r.Context(), "read provider stream", "error", rerr)
+				writeStreamError(w, flusher, r)
+			}
+			return
+		}
+	}
+}
+
+// prepare читает и проверяет запрос и возвращает маршрут, тело для провайдера и признак потока.
+func (g *gateway) prepare(w http.ResponseWriter, r *http.Request) (route, []byte, bool, *apiError) {
 	bad := func(msg string) *apiError { return &apiError{http.StatusBadRequest, errInvalidRequest, msg} }
 
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	if err != nil {
-		return route{}, nil, bad("cannot read request body")
+		return route{}, nil, false, bad("cannot read request body")
 	}
 	var req map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return route{}, nil, bad("request body is not valid JSON")
+		return route{}, nil, false, bad("request body is not valid JSON")
 	}
-	if isTrue(req["stream"]) {
-		return route{}, nil, bad("streaming is not supported yet")
-	}
+	stream := isTrue(req["stream"])
 	if err := checkContent(req["messages"]); err != nil {
-		return route{}, nil, bad(err.Error())
+		return route{}, nil, false, bad(err.Error())
 	}
 	var model string
 	if err := json.Unmarshal(req["model"], &model); err != nil {
-		return route{}, nil, bad("model must be a string")
+		return route{}, nil, false, bad("model must be a string")
 	}
 	rt, found := g.routes[model]
 	if !found {
-		return route{}, nil, &apiError{http.StatusNotFound, errNotFound, fmt.Sprintf("model %q not found", model)}
+		return route{}, nil, false, &apiError{http.StatusNotFound, errNotFound, fmt.Sprintf("model %q not found", model)}
 	}
 	req["model"], err = json.Marshal(rt.providerModel)
 	if err != nil {
-		return route{}, nil, &apiError{http.StatusInternalServerError, errAPI, "cannot encode request"}
+		return route{}, nil, false, &apiError{http.StatusInternalServerError, errAPI, "cannot encode request"}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return route{}, nil, &apiError{http.StatusInternalServerError, errAPI, "cannot encode request"}
+		return route{}, nil, false, &apiError{http.StatusInternalServerError, errAPI, "cannot encode request"}
 	}
-	return rt, body, nil
+	return rt, body, stream, nil
 }
 
 func isTrue(raw json.RawMessage) bool {
@@ -218,4 +271,20 @@ func writeError(w http.ResponseWriter, e *apiError) {
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		slog.Warn("write error response", "error", err)
 	}
+}
+
+// writeStreamError завершает поток SSE-событием с ошибкой: статус ответа уже отправлен, повтор невозможен.
+func writeStreamError(w http.ResponseWriter, flusher http.Flusher, r *http.Request) {
+	event, err := json.Marshal(map[string]any{"error": map[string]any{
+		"message": "provider stream failed", "type": errAPI, "param": nil, "code": nil,
+	}})
+	if err != nil {
+		slog.ErrorContext(r.Context(), "encode stream error", "error", err)
+		return
+	}
+	if _, err := w.Write(append(append([]byte("data: "), event...), '\n', '\n')); err != nil {
+		slog.WarnContext(r.Context(), "write stream error", "error", err)
+		return
+	}
+	flusher.Flush()
 }
