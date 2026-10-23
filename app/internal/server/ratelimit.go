@@ -35,8 +35,11 @@ func (l *rateLimiter) allow(ctx context.Context, c config.Client) (ok bool, retr
 		return true, 0, nil
 	}
 	res, err := windowCounter.Run(ctx, l.rdb, []string{"ratelimit:" + c.Name}, rl.Window.Milliseconds()).Int64Slice()
-	if err != nil || len(res) != 2 {
+	if err != nil {
 		return false, 0, fmt.Errorf("rate limit counter: %w", err)
+	}
+	if len(res) != 2 {
+		return false, 0, fmt.Errorf("rate limit counter: unexpected script result %v", res)
 	}
 	if res[0] <= int64(rl.Requests) {
 		return true, 0, nil
