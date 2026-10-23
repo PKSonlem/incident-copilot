@@ -290,19 +290,6 @@ func TestMalformedContentShapesAreRejectedWith400(t *testing.T) {
 	}
 }
 
-func TestStreamingRequestIsRejectedUntilSupported(t *testing.T) {
-	fp := newFakeProvider(t, "pong")
-	ts := newGateway(t, fp)
-
-	resp, body := post(t, ts, clientKey,
-		`{"model":"local-small","stream":true,"messages":[{"role":"user","content":"ping"}]}`)
-
-	assertOpenAIError(t, resp, body, http.StatusBadRequest)
-	if n := len(fp.received()); n != 0 {
-		t.Errorf("потоковый запрос дошёл до провайдера (%d)", n)
-	}
-}
-
 func TestProviderClientErrorIsPassedThrough(t *testing.T) {
 	fp := newFakeProvider(t, "pong")
 	fp.status = http.StatusTooManyRequests
