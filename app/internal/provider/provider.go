@@ -4,6 +4,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"io"
 )
 
 // KindOpenAI — любой OpenAI-совместимый сервер (llama-server, llama-swap).
@@ -15,10 +16,17 @@ type Response struct {
 	Body   []byte
 }
 
-// Provider выполняет обычный (не потоковый) запрос chat completions в формате OpenAI.
-// Тело уже содержит имя модели, как её знает провайдер.
+// Stream — потоковый ответ провайдера. Вызывающий обязан закрыть Body.
+type Stream struct {
+	Status int
+	Body   io.ReadCloser
+}
+
+// Provider выполняет запрос chat completions в формате OpenAI: обычный или потоковый.
+// Тело уже содержит имя модели, как её знает провайдер. Отмена ctx прерывает запрос к провайдеру.
 type Provider interface {
 	Complete(ctx context.Context, body []byte) (Response, error)
+	Stream(ctx context.Context, body []byte) (Stream, error)
 }
 
 // New создаёт провайдера по типу из конфигурации. Новый тип добавляется здесь и больше нигде.

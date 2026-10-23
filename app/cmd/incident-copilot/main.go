@@ -2,11 +2,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
@@ -20,6 +23,9 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+// shutdownTimeout — сколько ждём завершения текущих запросов после сигнала остановки.
+const shutdownTimeout = 60 * time.Second
 
 func run(logger *slog.Logger) error {
 	addr := os.Getenv("LISTEN_ADDR")
@@ -43,8 +49,23 @@ func run(logger *slog.Logger) error {
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.ListenAndServe() }()
 	logger.Info("listening", "addr", addr)
-	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	select {
+	case err := <-serveErr:
+		return fmt.Errorf("listen and serve: %w", err)
+	case <-ctx.Done():
+	}
+	logger.Info("shutting down: waiting for in-flight requests")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shutdown: %w", err)
+	}
+	if err := <-serveErr; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("listen and serve: %w", err)
 	}
 	return nil

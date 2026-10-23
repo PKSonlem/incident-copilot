@@ -24,17 +24,9 @@ func NewOpenAI(baseURL, apiKey string) *OpenAI {
 
 // Complete отправляет запрос на /v1/chat/completions.
 func (o *OpenAI) Complete(ctx context.Context, body []byte) (_ Response, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	resp, err := o.do(ctx, body)
 	if err != nil {
-		return Response{}, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if o.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	}
-	resp, err := o.client.Do(req)
-	if err != nil {
-		return Response{}, fmt.Errorf("call provider: %w", err)
+		return Response{}, err
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
@@ -46,4 +38,29 @@ func (o *OpenAI) Complete(ctx context.Context, body []byte) (_ Response, err err
 		return Response{}, fmt.Errorf("read provider response: %w", err)
 	}
 	return Response{Status: resp.StatusCode, Body: data}, nil
+}
+
+// Stream отправляет запрос и отдаёт тело ответа, не читая его.
+func (o *OpenAI) Stream(ctx context.Context, body []byte) (Stream, error) {
+	resp, err := o.do(ctx, body)
+	if err != nil {
+		return Stream{}, err
+	}
+	return Stream{Status: resp.StatusCode, Body: resp.Body}, nil
+}
+
+func (o *OpenAI) do(ctx context.Context, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.baseURL+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if o.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	}
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call provider: %w", err)
+	}
+	return resp, nil
 }
