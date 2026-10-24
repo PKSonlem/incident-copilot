@@ -1,4 +1,4 @@
-package server_test
+package httpapi_test
 
 import (
 	"bufio"
@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
-	"github.com/PKSonlem/incident-copilot/app/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/httpapi"
 )
 
 // Признак попадания в кэш: заголовок ответа X-Cache со значением HIT (при промахе MISS).
@@ -98,9 +98,9 @@ func newCacheGateway(t *testing.T, dp *dualProvider, ttl time.Duration) *httptes
 		},
 		Clients: []config.Client{{Name: "agent", Key: clientKey}},
 	}
-	h, err := server.New(cfg)
+	h, err := httpapi.New(cfg)
 	if err != nil {
-		t.Fatalf("server.New: %v", err)
+		t.Fatalf("httpapi.New: %v", err)
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)

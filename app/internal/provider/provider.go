@@ -3,7 +3,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"io"
 )
 
@@ -33,27 +32,9 @@ type ClientError struct {
 
 func (e *ClientError) Error() string { return e.Message }
 
-// Options — настройки провайдера, не относящиеся к подключению.
-type Options struct {
-	// DefaultMaxTokens — max_tokens для Claude, если клиент его не задал.
-	DefaultMaxTokens int
-}
-
 // Provider выполняет запрос chat completions в формате OpenAI: обычный или потоковый.
 // Тело уже содержит имя модели, как её знает провайдер. Отмена ctx прерывает запрос к провайдеру.
 type Provider interface {
 	Complete(ctx context.Context, body []byte) (Response, error)
 	Stream(ctx context.Context, body []byte) (Stream, error)
-}
-
-// New создаёт провайдера по типу из конфигурации. Новый тип добавляется здесь и больше нигде.
-func New(kind, baseURL, apiKey string, opts Options) (Provider, error) {
-	switch kind {
-	case KindOpenAI:
-		return NewOpenAI(baseURL, apiKey), nil
-	case KindClaude:
-		return NewClaude(baseURL, apiKey, opts.DefaultMaxTokens), nil
-	default:
-		return nil, fmt.Errorf("unsupported provider kind %q", kind)
-	}
 }

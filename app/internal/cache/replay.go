@@ -1,9 +1,8 @@
-package server
+package cache
 
 import (
 	"encoding/json"
-	"log/slog"
-	"net/http"
+	"errors"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/chatwire"
 )
@@ -19,14 +18,12 @@ type cachedCompletion struct {
 	} `json:"choices"`
 }
 
-// replayStream отдаёт сохранённый chat.completion как поток SSE: для каждого выбора один чанк
-// с полным содержимым и один завершающий чанк с finish_reason.
-func replayStream(w http.ResponseWriter, r *http.Request, completion []byte) {
+// ReplayEvents превращает сохранённый chat.completion в события SSE: для каждого выбора один чанк
+// с полным содержимым и один завершающий чанк с finish_reason, в конце [DONE].
+func ReplayEvents(completion []byte) ([][]byte, error) {
 	var cached cachedCompletion
-	flusher, canFlush := w.(http.Flusher)
-	if err := json.Unmarshal(completion, &cached); err != nil || len(cached.Choices) == 0 || !canFlush {
-		writeError(w, &apiError{http.StatusInternalServerError, errAPI, "cannot replay cached response"})
-		return
+	if err := json.Unmarshal(completion, &cached); err != nil || len(cached.Choices) == 0 {
+		return nil, errors.New("cannot replay cached response")
 	}
 	events := make([][]byte, 0, 2*len(cached.Choices)+1)
 	for _, choice := range cached.Choices {
@@ -39,23 +36,12 @@ func replayStream(w http.ResponseWriter, r *http.Request, completion []byte) {
 				Choices: []map[string]any{choiceChunk},
 			}.SSE()
 			if err != nil {
-				writeError(w, &apiError{http.StatusInternalServerError, errAPI, "cannot replay cached response"})
-				return
+				return nil, errors.New("cannot replay cached response")
 			}
 			events = append(events, event)
 		}
 	}
-	events = append(events, []byte(chatwire.DoneEvent))
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	for _, event := range events {
-		if _, err := w.Write(event); err != nil {
-			slog.WarnContext(r.Context(), "write cached stream", "error", err)
-			return
-		}
-	}
-	flusher.Flush()
+	return append(events, []byte(chatwire.DoneEvent)), nil
 }
 
 // replayDelta превращает message в delta: tool_calls получают index, а пустой или null content

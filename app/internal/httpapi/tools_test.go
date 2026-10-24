@@ -1,4 +1,4 @@
-package server_test
+package httpapi_test
 
 import (
 	"bufio"
@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
-	"github.com/PKSonlem/incident-copilot/app/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/httpapi"
 )
 
 // Тесты tool calling (#6) через HTTP-шов гейтвея: клиент шлёт tools в формате OpenAI и получает
@@ -209,14 +209,14 @@ func (lp *toolsLocalProvider) received() []map[string]any {
 
 func newToolsLocalGateway(t *testing.T, lp *toolsLocalProvider) *httptest.Server {
 	t.Helper()
-	h, err := server.New(config.Config{
+	h, err := httpapi.New(config.Config{
 		Redis:     config.Redis{Addr: startRedis(t)},
 		Providers: []config.Provider{{Name: "local", Kind: "openai", BaseURL: lp.URL}},
 		Models:    []config.Model{{Name: "local-small", Provider: "local", ProviderModel: "qwen-local"}},
 		Clients:   []config.Client{{Name: "agent", Key: clientKey}},
 	})
 	if err != nil {
-		t.Fatalf("server.New: %v", err)
+		t.Fatalf("httpapi.New: %v", err)
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
@@ -384,14 +384,14 @@ var anthropicToolUseStream = []string{
 
 func newToolsClaudeGateway(t *testing.T, ta *toolsAnthropic) *httptest.Server {
 	t.Helper()
-	h, err := server.New(config.Config{
+	h, err := httpapi.New(config.Config{
 		Redis:     config.Redis{Addr: startRedis(t)},
 		Providers: []config.Provider{{Name: "anthropic", Kind: "claude", BaseURL: ta.URL, APIKey: anthropicKey}},
 		Models:    []config.Model{{Name: claudeAlias, Provider: "anthropic", ProviderModel: claudeModel}},
 		Clients:   []config.Client{{Name: "agent", Key: clientKey}},
 	})
 	if err != nil {
-		t.Fatalf("server.New: %v", err)
+		t.Fatalf("httpapi.New: %v", err)
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)

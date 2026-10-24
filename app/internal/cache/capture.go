@@ -1,4 +1,4 @@
-package server
+package cache
 
 import (
 	"bytes"
@@ -10,36 +10,36 @@ import (
 	"github.com/PKSonlem/incident-copilot/app/internal/chatwire"
 )
 
-// streamCapture копирует поток SSE провайдера и по его окончании кладёт собранный
+// StreamCapture копирует поток SSE провайдера и по его окончании кладёт собранный
 // chat.completion в кэш. Методы безопасны для nil: nil означает «запрос не кэшируем».
-type streamCapture struct {
-	cache     *responseCache
-	plan      cachePlan
+type StreamCapture struct {
+	cache     *Cache
+	plan      Plan
 	assembler completionAssembler
 }
 
-// capture начинает запись потока; для запроса вне кэша возвращает nil.
-func (c *responseCache) capture(plan cachePlan) *streamCapture {
-	if plan.status != cacheMiss {
+// Capture начинает запись потока; для запроса вне кэша возвращает nil.
+func (c *Cache) Capture(plan Plan) *StreamCapture {
+	if plan.Status != Miss {
 		return nil
 	}
-	return &streamCapture{cache: c, plan: plan}
+	return &StreamCapture{cache: c, plan: plan}
 }
 
-// feed передаёт очередную порцию потока, как её прочитали у провайдера.
-func (sc *streamCapture) feed(data []byte) {
+// Feed передаёт очередную порцию потока, как её прочитали у провайдера.
+func (sc *StreamCapture) Feed(data []byte) {
 	if sc != nil {
 		sc.assembler.feed(data)
 	}
 }
 
-// commit сохраняет ответ, если поток закончился корректно (событием [DONE], без ошибок).
-func (sc *streamCapture) commit(ctx context.Context) {
+// Commit сохраняет ответ, если поток закончился корректно (событием [DONE], без ошибок).
+func (sc *StreamCapture) Commit(ctx context.Context) {
 	if sc == nil {
 		return
 	}
 	if completion, ok := sc.assembler.completion(); ok {
-		sc.cache.store(ctx, sc.plan, completion)
+		sc.cache.Store(ctx, sc.plan, completion)
 	}
 }
 

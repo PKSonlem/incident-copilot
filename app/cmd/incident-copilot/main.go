@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
-	"github.com/PKSonlem/incident-copilot/app/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/httpapi"
 )
 
 func main() {
@@ -40,7 +40,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	handler, err := server.New(cfg)
+	handler, err := httpapi.New(cfg)
 	if err != nil {
 		return fmt.Errorf("build server: %w", err)
 	}

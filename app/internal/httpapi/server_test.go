@@ -1,4 +1,4 @@
-package server_test
+package httpapi_test
 
 import (
 	"net/http"
@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
-	"github.com/PKSonlem/incident-copilot/app/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/httpapi"
 )
 
 func TestLiveAndReady(t *testing.T) {
-	h, err := server.New(config.Config{})
+	h, err := httpapi.New(config.Config{})
 	if err != nil {
-		t.Fatalf("server.New: %v", err)
+		t.Fatalf("httpapi.New: %v", err)
 	}
 	ts := httptest.NewServer(h)
 	defer ts.Close()
