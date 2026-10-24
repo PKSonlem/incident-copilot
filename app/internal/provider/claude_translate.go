@@ -11,9 +11,9 @@ import (
 	"github.com/PKSonlem/incident-copilot/app/internal/chatwire"
 )
 
-// errToolsUnsupported — ответ на любой запрос с инструментами, пока провайдер Claude их не переводит.
-// TODO(#6): перевести tools, tool_choice, роль tool и assistant.tool_calls в формат Anthropic.
-var errToolsUnsupported = &ClientError{Message: "tools not supported for this provider yet"}
+// errLegacyFunctions — ответ на устаревшие functions, function_call и роль function: поддерживаются
+// только tools.
+var errLegacyFunctions = &ClientError{Message: "functions and function_call are not supported: use tools and tool_choice"}
 
 // translateRequest переводит тело chat completions (OpenAI) в тело Anthropic Messages.
 // Второй результат: просил ли клиент usage в потоке (stream_options.include_usage).
@@ -21,8 +21,8 @@ var errToolsUnsupported = &ClientError{Message: "tools not supported for this pr
 // Поля запроса, которых у Anthropic нет или которые здесь не переводятся (n, presence_penalty,
 // frequency_penalty, seed, response_format, user, metadata и т. п.), намеренно отбрасываются:
 // они не меняют смысл запроса настолько, чтобы отказывать клиенту, а OpenAI-клиенты шлют их
-// по умолчанию. Инструменты (tools, tool_choice, functions, роль tool, tool_calls) молча
-// отбрасывать нельзя: ответ был бы неверным, поэтому такой запрос получает ClientError.
+// по умолчанию. Инструменты (tools, tool_choice, роль tool, tool_calls) переводятся в формат
+// Anthropic; устаревшие functions и function_call отвергаются ClientError.
 func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, bool, error) {
 	var in struct {
 		Model               string            `json:"model"`
@@ -43,9 +43,9 @@ func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, b
 	if err := json.Unmarshal(body, &in); err != nil {
 		return nil, false, fmt.Errorf("decode request: %w", err)
 	}
-	for _, field := range []json.RawMessage{in.Tools, in.ToolChoice, in.Functions, in.FunctionCall} {
+	for _, field := range []json.RawMessage{in.Functions, in.FunctionCall} {
 		if !chatwire.IsNullOrEmpty(field) {
-			return nil, false, errToolsUnsupported
+			return nil, false, errLegacyFunctions
 		}
 	}
 	out := map[string]any{"model": in.Model, "max_tokens": defaultMaxTokens}
@@ -69,6 +69,16 @@ func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, b
 	if stream {
 		out["stream"] = true
 	}
+	if tools, err := translateTools(in.Tools); err != nil {
+		return nil, false, err
+	} else if len(tools) > 0 {
+		out["tools"] = tools
+	}
+	if choice, err := translateToolChoice(in.ToolChoice); err != nil {
+		return nil, false, err
+	} else if choice != nil {
+		out["tool_choice"] = choice
+	}
 
 	var system []string
 	messages := []map[string]any{}
@@ -77,24 +87,40 @@ func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, b
 			Role         string          `json:"role"`
 			Content      json.RawMessage `json:"content"`
 			ToolCalls    json.RawMessage `json:"tool_calls"`
+			ToolCallID   string          `json:"tool_call_id"`
 			FunctionCall json.RawMessage `json:"function_call"`
 		}
 		if err := json.Unmarshal(raw, &m); err != nil {
 			return nil, false, fmt.Errorf("decode message: %w", err)
 		}
-		if m.Role == "tool" || m.Role == "function" ||
-			!chatwire.IsNullOrEmpty(m.ToolCalls) || !chatwire.IsNullOrEmpty(m.FunctionCall) {
-			return nil, false, errToolsUnsupported
+		if m.Role == "function" || !chatwire.IsNullOrEmpty(m.FunctionCall) {
+			return nil, false, errLegacyFunctions
 		}
 		text, err := contentText(m.Content)
 		if err != nil {
 			return nil, false, err
 		}
-		if m.Role == "system" || m.Role == "developer" {
+		switch {
+		case m.Role == "tool":
+			block := map[string]any{"type": "tool_result", "tool_use_id": m.ToolCallID, "content": text}
+			// Результаты подряд идущих вызовов Anthropic ждёт одним сообщением user.
+			if n := len(messages); n > 0 && lastIsToolResult(messages[n-1]) {
+				blocks, _ := messages[n-1]["content"].([]map[string]any) //nolint:errcheck // тип проверен в lastIsToolResult
+				messages[n-1]["content"] = append(blocks, block)
+			} else {
+				messages = append(messages, map[string]any{"role": "user", "content": []map[string]any{block}})
+			}
+		case m.Role == "system" || m.Role == "developer":
 			system = append(system, text)
-			continue
+		case !chatwire.IsNullOrEmpty(m.ToolCalls):
+			blocks, err := assistantBlocks(text, m.ToolCalls)
+			if err != nil {
+				return nil, false, err
+			}
+			messages = append(messages, map[string]any{"role": m.Role, "content": blocks})
+		default:
+			messages = append(messages, map[string]any{"role": m.Role, "content": text})
 		}
-		messages = append(messages, map[string]any{"role": m.Role, "content": text})
 	}
 	if len(system) > 0 {
 		out["system"] = strings.Join(system, "\n\n")
@@ -105,6 +131,103 @@ func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, b
 		return nil, false, fmt.Errorf("encode request: %w", err)
 	}
 	return data, in.StreamOptions.IncludeUsage, nil
+}
+
+func lastIsToolResult(msg map[string]any) bool {
+	blocks, ok := msg["content"].([]map[string]any)
+	return ok && len(blocks) > 0 && blocks[0]["type"] == "tool_result"
+}
+
+// translateTools переводит tools OpenAI ({type:function, function:{name, description, parameters}})
+// в tools Anthropic ({name, description, input_schema}).
+func translateTools(raw json.RawMessage) ([]map[string]any, error) {
+	if chatwire.IsNullOrEmpty(raw) {
+		return nil, nil
+	}
+	var in []struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Parameters  json.RawMessage `json:"parameters"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, &ClientError{Message: "tools must be an array of function tools"}
+	}
+	out := make([]map[string]any, 0, len(in))
+	for _, t := range in {
+		if t.Type != "function" || t.Function.Name == "" {
+			return nil, &ClientError{Message: "each tool must have type function and a function name"}
+		}
+		schema := json.RawMessage(`{"type":"object","properties":{}}`)
+		if !chatwire.IsNullOrEmpty(t.Function.Parameters) {
+			schema = t.Function.Parameters
+		}
+		tool := map[string]any{"name": t.Function.Name, "input_schema": schema}
+		if t.Function.Description != "" {
+			tool["description"] = t.Function.Description
+		}
+		out = append(out, tool)
+	}
+	return out, nil
+}
+
+// translateToolChoice переводит tool_choice: auto, none, required (any) и конкретная функция (tool).
+func translateToolChoice(raw json.RawMessage) (map[string]any, error) {
+	if chatwire.IsNullOrEmpty(raw) {
+		return nil, nil
+	}
+	var mode string
+	if json.Unmarshal(raw, &mode) == nil {
+		switch mode {
+		case "auto":
+			return map[string]any{"type": "auto"}, nil
+		case "none":
+			return map[string]any{"type": "none"}, nil
+		case "required":
+			return map[string]any{"type": "any"}, nil
+		}
+		return nil, &ClientError{Message: fmt.Sprintf("unsupported tool_choice %q", mode)}
+	}
+	var named struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &named); err != nil || named.Type != "function" || named.Function.Name == "" {
+		return nil, &ClientError{Message: "tool_choice must be auto, none, required or a function"}
+	}
+	return map[string]any{"type": "tool", "name": named.Function.Name}, nil
+}
+
+// assistantBlocks собирает content сообщения assistant с вызовами: текст (если есть) и tool_use.
+func assistantBlocks(text string, rawCalls json.RawMessage) ([]map[string]any, error) {
+	var calls []struct {
+		ID       string `json:"id"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}
+	if err := json.Unmarshal(rawCalls, &calls); err != nil {
+		return nil, &ClientError{Message: "tool_calls must be an array of function calls"}
+	}
+	blocks := []map[string]any{}
+	if text != "" {
+		blocks = append(blocks, map[string]any{"type": "text", "text": text})
+	}
+	for _, c := range calls {
+		input := map[string]any{}
+		if strings.TrimSpace(c.Function.Arguments) != "" {
+			if err := json.Unmarshal([]byte(c.Function.Arguments), &input); err != nil {
+				return nil, &ClientError{Message: fmt.Sprintf("arguments of tool call %q must be a JSON object", c.ID)}
+			}
+		}
+		blocks = append(blocks, map[string]any{"type": "tool_use", "id": c.ID, "name": c.Function.Name, "input": input})
+	}
+	return blocks, nil
 }
 
 // contentText приводит content (строка, null или массив текстовых частей) к строке.
@@ -183,8 +306,11 @@ func translateResponse(data []byte) ([]byte, error) {
 		ID      string `json:"id"`
 		Model   string `json:"model"`
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type  string          `json:"type"`
+			Text  string          `json:"text"`
+			ID    string          `json:"id"`
+			Name  string          `json:"name"`
+			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string         `json:"stop_reason"`
 		Usage      anthropicUsage `json:"usage"`
@@ -193,9 +319,26 @@ func translateResponse(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("decode provider response: %w", err)
 	}
 	var text strings.Builder
+	var calls []map[string]any
 	for _, b := range in.Content {
-		if b.Type == "text" {
+		switch b.Type {
+		case "text":
 			text.WriteString(b.Text)
+		case "tool_use":
+			args := string(b.Input)
+			if chatwire.IsNullOrEmpty(b.Input) {
+				args = "{}"
+			}
+			calls = append(calls, map[string]any{
+				"id": b.ID, "type": "function", "function": map[string]any{"name": b.Name, "arguments": args},
+			})
+		}
+	}
+	message := map[string]any{"role": "assistant", "content": text.String()}
+	if len(calls) > 0 {
+		message["tool_calls"] = calls
+		if text.Len() == 0 {
+			message["content"] = nil
 		}
 	}
 	out, err := json.Marshal(map[string]any{
@@ -205,7 +348,7 @@ func translateResponse(data []byte) ([]byte, error) {
 		"model":   in.Model,
 		"choices": []any{map[string]any{
 			"index":         0,
-			"message":       map[string]any{"role": "assistant", "content": text.String()},
+			"message":       message,
 			"finish_reason": finishReason(in.StopReason),
 		}},
 		"usage": openAIUsage(in.Usage.InputTokens, in.Usage.OutputTokens),

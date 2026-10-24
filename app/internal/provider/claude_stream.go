@@ -50,6 +50,8 @@ type streamState struct {
 	created      json.RawMessage
 	inputTokens  int
 	outputTokens int
+	toolCalls    int         // сколько вызовов уже начато: index вызова в OpenAI считается по вызовам
+	blockCall    map[int]int // индекс блока Anthropic -> index вызова
 }
 
 func translateStream(r io.Reader, w io.Writer, includeUsage bool) error {
@@ -85,9 +87,16 @@ func (s *streamState) handle(payload []byte, w io.Writer, includeUsage bool) (bo
 			Model string         `json:"model"`
 			Usage anthropicUsage `json:"usage"`
 		} `json:"message"`
+		Index        int `json:"index"`
+		ContentBlock struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"content_block"`
 		Delta struct {
-			Type       string `json:"type"`
-			Text       string `json:"text"`
+			Type        string `json:"type"`
+			Text        string `json:"text"`
+			PartialJSON string `json:"partial_json"`
 			StopReason string `json:"stop_reason"`
 		} `json:"delta"`
 		Usage anthropicUsage `json:"usage"`
@@ -103,11 +112,31 @@ func (s *streamState) handle(payload []byte, w io.Writer, includeUsage bool) (bo
 		s.id, s.model = "chatcmpl-"+ev.Message.ID, ev.Message.Model
 		s.inputTokens = ev.Message.Usage.InputTokens
 		return false, s.writeChunk(w, map[string]any{"role": "assistant", "content": ""}, nil)
-	case "content_block_delta":
-		if ev.Delta.Type != "text_delta" {
+	case "content_block_start":
+		if ev.ContentBlock.Type != "tool_use" {
 			return false, nil
 		}
-		return false, s.writeChunk(w, map[string]any{"content": ev.Delta.Text}, nil)
+		if s.blockCall == nil {
+			s.blockCall = map[int]int{}
+		}
+		s.blockCall[ev.Index] = s.toolCalls
+		s.toolCalls++
+		return false, s.writeToolCall(w, s.blockCall[ev.Index], map[string]any{
+			"id": ev.ContentBlock.ID, "type": "function",
+			"function": map[string]any{"name": ev.ContentBlock.Name, "arguments": ""},
+		})
+	case "content_block_delta":
+		switch ev.Delta.Type {
+		case "text_delta":
+			return false, s.writeChunk(w, map[string]any{"content": ev.Delta.Text}, nil)
+		case "input_json_delta":
+			call, ok := s.blockCall[ev.Index]
+			if !ok || ev.Delta.PartialJSON == "" {
+				return false, nil
+			}
+			return false, s.writeToolCall(w, call, map[string]any{"function": map[string]any{"arguments": ev.Delta.PartialJSON}})
+		}
+		return false, nil
 	case "message_delta":
 		s.outputTokens = ev.Usage.OutputTokens
 		reason := finishReason(ev.Delta.StopReason)
@@ -136,6 +165,12 @@ func (s *streamState) writeChunk(w io.Writer, delta map[string]any, finish *stri
 		finishReason = *finish
 	}
 	return s.write(w, chatwire.Chunk{Choices: []map[string]any{chatwire.Choice(0, delta, finishReason)}})
+}
+
+// writeToolCall пишет фрагмент вызова tool: fields дополняется index.
+func (s *streamState) writeToolCall(w io.Writer, index int, fields map[string]any) error {
+	fields["index"] = index
+	return s.writeChunk(w, map[string]any{"tool_calls": []any{fields}}, nil)
 }
 
 // writeUsageChunk пишет чанк с usage без choices, как OpenAI при include_usage.

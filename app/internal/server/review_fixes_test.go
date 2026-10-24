@@ -13,16 +13,17 @@ import (
 	"github.com/PKSonlem/incident-copilot/app/internal/server"
 )
 
-// --- Claude: инструменты пока не переводятся (#6), запрос с ними получает 400 ---
+// --- Claude: устаревшие functions и некорректные tools получают 400 (tools переводятся в #6) ---
 
-func TestClaudeRequestWithToolsIsRejectedWith400(t *testing.T) {
+func TestClaudeRequestWithUnsupportedToolFormsIsRejectedWith400(t *testing.T) {
 	cases := map[string]string{
-		"tools":       `"tools":[{"type":"function","function":{"name":"f","parameters":{}}}],` + pingMessages,
-		"tool_choice": `"tool_choice":"auto",` + pingMessages,
-		"роль tool": `"messages":[{"role":"user","content":"ping"},` +
-			`{"role":"tool","tool_call_id":"c1","content":"42"}]`,
-		"assistant.tool_calls": `"messages":[{"role":"user","content":"ping"},` +
-			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}]`,
+		"functions":     `"functions":[{"name":"f","parameters":{}}],` + pingMessages,
+		"function_call": `"function_call":"auto",` + pingMessages,
+		"роль function": `"messages":[{"role":"user","content":"ping"},` +
+			`{"role":"function","name":"f","content":"42"}]`,
+		"arguments не JSON": `"messages":[{"role":"user","content":"ping"},` +
+			`{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"not json"}}]}]`,
+		"неизвестный tool_choice": `"tool_choice":"sometimes",` + pingMessages,
 	}
 	for name, body := range cases {
 		for _, stream := range []bool{false, true} {
@@ -45,9 +46,8 @@ func TestClaudeRequestWithToolsIsRejectedWith400(t *testing.T) {
 						Type    string `json:"type"`
 					} `json:"error"`
 				}
-				if err := json.Unmarshal(got, &env); err != nil || env.Error.Type != "invalid_request_error" ||
-					!strings.Contains(env.Error.Message, "tools not supported") {
-					t.Errorf("ожидали invalid_request_error «tools not supported…», got %s", got)
+				if err := json.Unmarshal(got, &env); err != nil || env.Error.Type != "invalid_request_error" || env.Error.Message == "" {
+					t.Errorf("ожидали invalid_request_error с сообщением, got %s", got)
 				}
 				if n := len(fa.received()); n != 0 {
 					t.Errorf("Anthropic получил %d запросов, want 0", n)
