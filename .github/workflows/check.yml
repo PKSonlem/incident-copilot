@@ -19,3 +19,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build .
+  rules:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Flag changes to project rules
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          files=$(git diff --name-only "$BASE"...HEAD -- CLAUDE.md CODING_STANDARDS.md docs/adr .golangci.yml .github scripts Makefile Dockerfile compose.yaml .claude)
+          if [ -n "$files" ]; then
+            echo "::warning title=Правки правил::PR меняет файлы правил, проверь, что они не ослаблены: $(echo $files | tr '\n' ' ')"
+          fi
