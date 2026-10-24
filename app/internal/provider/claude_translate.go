@@ -104,8 +104,8 @@ func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, b
 		case m.Role == "tool":
 			block := map[string]any{"type": "tool_result", "tool_use_id": m.ToolCallID, "content": text}
 			// Результаты подряд идущих вызовов Anthropic ждёт одним сообщением user.
-			if n := len(messages); n > 0 && lastIsToolResult(messages[n-1]) {
-				blocks, _ := messages[n-1]["content"].([]map[string]any) //nolint:errcheck // тип проверен в lastIsToolResult
+			if n := len(messages); n > 0 && isToolResultMessage(messages[n-1]) {
+				blocks, _ := messages[n-1]["content"].([]map[string]any) //nolint:errcheck // тип проверен в isToolResultMessage
 				messages[n-1]["content"] = append(blocks, block)
 			} else {
 				messages = append(messages, map[string]any{"role": "user", "content": []map[string]any{block}})
@@ -133,7 +133,23 @@ func translateRequest(body []byte, stream bool, defaultMaxTokens int) ([]byte, b
 	return data, in.StreamOptions.IncludeUsage, nil
 }
 
-func lastIsToolResult(msg map[string]any) bool {
+// openAIToolCall собирает элемент tool_calls формата OpenAI. Пустые id и name опускаются: так выглядят
+// фрагменты аргументов в потоке, где id и имя приходят только в первом фрагменте.
+func openAIToolCall(id, name, arguments string) map[string]any {
+	function := map[string]any{"arguments": arguments}
+	call := map[string]any{"function": function}
+	if name != "" {
+		function["name"] = name
+	}
+	if id != "" {
+		call["id"], call["type"] = id, "function"
+	}
+	return call
+}
+
+// isToolResultMessage сообщает, что это сообщение user с блоками tool_result (в него склеиваются
+// результаты подряд идущих tool).
+func isToolResultMessage(msg map[string]any) bool {
 	blocks, ok := msg["content"].([]map[string]any)
 	return ok && len(blocks) > 0 && blocks[0]["type"] == "tool_result"
 }
@@ -329,9 +345,7 @@ func translateResponse(data []byte) ([]byte, error) {
 			if chatwire.IsNullOrEmpty(b.Input) {
 				args = "{}"
 			}
-			calls = append(calls, map[string]any{
-				"id": b.ID, "type": "function", "function": map[string]any{"name": b.Name, "arguments": args},
-			})
+			calls = append(calls, openAIToolCall(b.ID, b.Name, args))
 		}
 	}
 	message := map[string]any{"role": "assistant", "content": text.String()}

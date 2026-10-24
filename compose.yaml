@@ -14,6 +14,7 @@ services:
     environment:
       CONFIG_PATH: /etc/gateway/gateway.yaml
       GATEWAY_CLIENT_KEY: ${GATEWAY_CLIENT_KEY:?задайте GATEWAY_CLIENT_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?задайте ANTHROPIC_API_KEY}
     volumes:
       - ./gateway.example.yaml:/etc/gateway/gateway.yaml:ro
     ports:

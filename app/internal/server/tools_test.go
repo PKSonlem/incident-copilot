@@ -301,7 +301,7 @@ func TestToolsLocalToolResultsReachProviderUnchanged(t *testing.T) {
 	if len(msgs) != 3 {
 		t.Fatalf("сообщений %d, want 3: %v", len(msgs), msgs)
 	}
-	assistant, _ := msgs[1].(map[string]any) //nolint:errcheck // проверяется ниже
+	assistant, _ := msgs[1].(map[string]any)                                                                                       //nolint:errcheck // проверяется ниже
 	if calls, _ := assistant["tool_calls"].([]any); len(calls) != 1 || !strings.Contains(mustJSON(t, calls[0]), `"id":"call_1"`) { //nolint:errcheck // проверка длиной
 		t.Errorf("assistant.tool_calls потеряны: %v", assistant)
 	}

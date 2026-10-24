@@ -97,7 +97,7 @@ func (s *streamState) handle(payload []byte, w io.Writer, includeUsage bool) (bo
 			Type        string `json:"type"`
 			Text        string `json:"text"`
 			PartialJSON string `json:"partial_json"`
-			StopReason string `json:"stop_reason"`
+			StopReason  string `json:"stop_reason"`
 		} `json:"delta"`
 		Usage anthropicUsage `json:"usage"`
 		Error struct {
@@ -121,10 +121,7 @@ func (s *streamState) handle(payload []byte, w io.Writer, includeUsage bool) (bo
 		}
 		s.blockCall[ev.Index] = s.toolCalls
 		s.toolCalls++
-		return false, s.writeToolCall(w, s.blockCall[ev.Index], map[string]any{
-			"id": ev.ContentBlock.ID, "type": "function",
-			"function": map[string]any{"name": ev.ContentBlock.Name, "arguments": ""},
-		})
+		return false, s.writeToolCall(w, s.blockCall[ev.Index], openAIToolCall(ev.ContentBlock.ID, ev.ContentBlock.Name, ""))
 	case "content_block_delta":
 		switch ev.Delta.Type {
 		case "text_delta":
@@ -134,7 +131,7 @@ func (s *streamState) handle(payload []byte, w io.Writer, includeUsage bool) (bo
 			if !ok || ev.Delta.PartialJSON == "" {
 				return false, nil
 			}
-			return false, s.writeToolCall(w, call, map[string]any{"function": map[string]any{"arguments": ev.Delta.PartialJSON}})
+			return false, s.writeToolCall(w, call, openAIToolCall("", "", ev.Delta.PartialJSON))
 		}
 		return false, nil
 	case "message_delta":

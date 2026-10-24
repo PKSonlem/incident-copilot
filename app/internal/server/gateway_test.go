@@ -363,15 +363,22 @@ providers:
     kind: openai
     base_url: http://localhost:7382
     api_key_env: LOCAL_PROVIDER_KEY
+  - name: anthropic
+    kind: claude
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
 models:
   - name: local-small
     provider: local
     provider_model: qwen-local
+  - name: claude-sonnet
+    provider: anthropic
+    provider_model: claude-test-model
 clients:
   - name: agent
     key_env: AGENT_CLIENT_KEY
 `
-	env := map[string]string{"LOCAL_PROVIDER_KEY": "from-env-provider", "AGENT_CLIENT_KEY": "from-env-client"}
+	env := map[string]string{"LOCAL_PROVIDER_KEY": "from-env-provider", "AGENT_CLIENT_KEY": "from-env-client", "ANTHROPIC_API_KEY": "from-env-anthropic"}
 	cfg, err := config.Load(writeConfig(t, file), func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -387,6 +394,16 @@ clients:
 		leaked := strings.Replace(file, "api_key_env: LOCAL_PROVIDER_KEY", "api_key: sk-literal", 1)
 		if _, err := config.Load(writeConfig(t, leaked), func(k string) string { return env[k] }); err == nil {
 			t.Error("Load принял секрет, записанный в файле; ожидалась ошибка")
+		}
+	})
+
+	t.Run("без модели на провайдере каждого вида старт отвергается", func(t *testing.T) {
+		for kind, missing := range map[string]string{"openai": "provider: local", "claude": "provider: anthropic"} {
+			noModel := strings.Replace(file, missing, "provider: gone", 1)
+			_, err := config.Load(writeConfig(t, noModel), func(k string) string { return env[k] })
+			if err == nil || !strings.Contains(err.Error(), kind) {
+				t.Errorf("без модели kind=%s: err=%v, want ошибку с упоминанием %q", kind, err, kind)
+			}
 		}
 	})
 

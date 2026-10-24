@@ -78,9 +78,9 @@ func New(cfg config.Config) (http.Handler, error) {
 		rt := route{name: m.Name, kind: kinds[m.Provider], provider: p, providerModel: m.ProviderModel}
 		g.routes[m.Name] = rt
 		switch {
-		case rt.kind == "openai" && g.simpleRoute == nil:
+		case rt.kind == provider.KindOpenAI && g.simpleRoute == nil:
 			g.simpleRoute = &rt
-		case rt.kind == "claude" && g.complexRoute == nil:
+		case rt.kind == provider.KindClaude && g.complexRoute == nil:
 			g.complexRoute = &rt
 		}
 	}
@@ -239,8 +239,10 @@ func (g *gateway) prepare(w http.ResponseWriter, r *http.Request) (prepared, *ap
 		return prepared{}, bad(err.Error())
 	}
 	var model string
-	if err := json.Unmarshal(req["model"], &model); err != nil {
-		return prepared{}, bad("model must be a string")
+	if raw, present := req["model"]; present {
+		if err := json.Unmarshal(raw, &model); err != nil {
+			return prepared{}, bad("model must be a string")
+		}
 	}
 	complexity := r.Header.Get(complexityHeader)
 	if complexity != "" && complexity != complexitySimple && complexity != complexityComplex {

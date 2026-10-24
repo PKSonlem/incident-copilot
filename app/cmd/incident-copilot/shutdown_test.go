@@ -65,9 +65,9 @@ func TestSIGTERMLetsRunningStreamFinish(t *testing.T) {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 	cfgPath := filepath.Join(dir, "gateway.yaml")
-	cfg := fmt.Sprintf("redis:\n  addr: %s\nproviders:\n  - name: local\n    kind: openai\n    base_url: %s\n"+
-		"models:\n  - name: local-small\n    provider: local\n    provider_model: qwen-local\n"+
-		"clients:\n  - name: agent\n    key_env: GATEWAY_CLIENT_KEY\n", redisAddr, provider.URL)
+	cfg := fmt.Sprintf("redis:\n  addr: %s\nproviders:\n  - name: local\n    kind: openai\n    base_url: %s\n  - name: anthropic\n    kind: claude\n    base_url: %s\n"+
+		"models:\n  - name: local-small\n    provider: local\n    provider_model: qwen-local\n  - name: claude-sonnet\n    provider: anthropic\n    provider_model: claude-test-model\n"+
+		"clients:\n  - name: agent\n    key_env: GATEWAY_CLIENT_KEY\n", redisAddr, provider.URL, provider.URL)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

@@ -98,6 +98,15 @@ func wantOK(t *testing.T, resp *http.Response, body []byte, wantContent string) 
 	}
 }
 
+func TestMissingModelFieldMeansRoutingByComplexity(t *testing.T) {
+	s := newRoutingGateway(t, config.RateLimit{})
+
+	resp, body := postComplexity(t, s.Server, "simple", `{"messages":[{"role":"user","content":"classify"}]}`)
+
+	wantOK(t, resp, body, localReply)
+	s.wantRouted(t, true)
+}
+
 func TestSimpleComplexityGoesToLocalModel(t *testing.T) {
 	s := newRoutingGateway(t, config.RateLimit{})
 
