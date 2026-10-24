@@ -7,10 +7,17 @@ providers:
   - name: local
     kind: openai
     base_url: http://host.docker.internal:7382
+  - name: anthropic
+    kind: claude
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
 models:
   - name: local-small
     provider: local
     provider_model: agent
+  - name: claude-sonnet
+    provider: anthropic
+    provider_model: claude-sonnet-4-5
 clients:
   - name: agent
     key_env: GATEWAY_CLIENT_KEY

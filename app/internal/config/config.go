@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/PKSonlem/incident-copilot/app/internal/provider"
 )
 
 // Config описывает провайдеров, модели и клиентов гейтвея.
@@ -133,7 +135,29 @@ func Load(path string, getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("model %q: name, provider and provider_model are required", m.Name)
 		}
 	}
+	if err := checkRoutingModels(cfg); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
+}
+
+// checkRoutingModels требует модель на провайдере каждого вида: маршрутизация по сложности
+// отправляет простые запросы на openai, сложные на claude.
+func checkRoutingModels(cfg Config) error {
+	kinds := map[string]string{}
+	for _, p := range cfg.Providers {
+		kinds[p.Name] = p.Kind
+	}
+	have := map[string]bool{}
+	for _, m := range cfg.Models {
+		have[kinds[m.Provider]] = true
+	}
+	for _, kind := range []string{provider.KindOpenAI, provider.KindClaude} {
+		if !have[kind] {
+			return fmt.Errorf("models: at least one model on a provider of kind %q is required for routing by complexity", kind)
+		}
+	}
+	return nil
 }
 
 func secretFromEnv(getenv func(string) string, name string) (string, error) {
