@@ -1,4 +1,4 @@
-package provider
+package claude
 
 import (
 	"encoding/json"
@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/chatwire"
+
+	"github.com/PKSonlem/incident-copilot/app/internal/provider"
 )
 
 // errLegacyFunctions — ответ на устаревшие functions, function_call и роль function: поддерживаются
 // только tools.
-var errLegacyFunctions = &ClientError{Message: "functions and function_call are not supported: use tools and tool_choice"}
+var errLegacyFunctions = &provider.ClientError{Message: "functions and function_call are not supported: use tools and tool_choice"}
 
 // translateRequest переводит тело chat completions (OpenAI) в тело Anthropic Messages.
 // Второй результат: просил ли клиент usage в потоке (stream_options.include_usage).
@@ -169,12 +171,12 @@ func translateTools(raw json.RawMessage) ([]map[string]any, error) {
 		} `json:"function"`
 	}
 	if err := json.Unmarshal(raw, &in); err != nil {
-		return nil, &ClientError{Message: "tools must be an array of function tools"}
+		return nil, &provider.ClientError{Message: "tools must be an array of function tools"}
 	}
 	out := make([]map[string]any, 0, len(in))
 	for _, t := range in {
 		if t.Type != "function" || t.Function.Name == "" {
-			return nil, &ClientError{Message: "each tool must have type function and a function name"}
+			return nil, &provider.ClientError{Message: "each tool must have type function and a function name"}
 		}
 		schema := json.RawMessage(`{"type":"object","properties":{}}`)
 		if !chatwire.IsNullOrEmpty(t.Function.Parameters) {
@@ -204,7 +206,7 @@ func translateToolChoice(raw json.RawMessage) (map[string]any, error) {
 		case "required":
 			return map[string]any{"type": "any"}, nil
 		}
-		return nil, &ClientError{Message: fmt.Sprintf("unsupported tool_choice %q", mode)}
+		return nil, &provider.ClientError{Message: fmt.Sprintf("unsupported tool_choice %q", mode)}
 	}
 	var named struct {
 		Type     string `json:"type"`
@@ -213,7 +215,7 @@ func translateToolChoice(raw json.RawMessage) (map[string]any, error) {
 		} `json:"function"`
 	}
 	if err := json.Unmarshal(raw, &named); err != nil || named.Type != "function" || named.Function.Name == "" {
-		return nil, &ClientError{Message: "tool_choice must be auto, none, required or a function"}
+		return nil, &provider.ClientError{Message: "tool_choice must be auto, none, required or a function"}
 	}
 	return map[string]any{"type": "tool", "name": named.Function.Name}, nil
 }
@@ -228,7 +230,7 @@ func assistantBlocks(text string, rawCalls json.RawMessage) ([]map[string]any, e
 		} `json:"function"`
 	}
 	if err := json.Unmarshal(rawCalls, &calls); err != nil {
-		return nil, &ClientError{Message: "tool_calls must be an array of function calls"}
+		return nil, &provider.ClientError{Message: "tool_calls must be an array of function calls"}
 	}
 	blocks := []map[string]any{}
 	if text != "" {
@@ -238,7 +240,7 @@ func assistantBlocks(text string, rawCalls json.RawMessage) ([]map[string]any, e
 		input := map[string]any{}
 		if strings.TrimSpace(c.Function.Arguments) != "" {
 			if err := json.Unmarshal([]byte(c.Function.Arguments), &input); err != nil {
-				return nil, &ClientError{Message: fmt.Sprintf("arguments of tool call %q must be a JSON object", c.ID)}
+				return nil, &provider.ClientError{Message: fmt.Sprintf("arguments of tool call %q must be a JSON object", c.ID)}
 			}
 		}
 		blocks = append(blocks, map[string]any{"type": "tool_use", "id": c.ID, "name": c.Function.Name, "input": input})
@@ -260,12 +262,12 @@ func contentText(raw json.RawMessage) (string, error) {
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return "", &ClientError{Message: "message content must be a string or an array of text parts"}
+		return "", &provider.ClientError{Message: "message content must be a string or an array of text parts"}
 	}
 	var sb strings.Builder
 	for _, p := range parts {
 		if p.Type != "text" {
-			return "", &ClientError{Message: fmt.Sprintf("unsupported content type %q: only text is supported", p.Type)}
+			return "", &provider.ClientError{Message: fmt.Sprintf("unsupported content type %q: only text is supported", p.Type)}
 		}
 		sb.WriteString(p.Text)
 	}
@@ -282,7 +284,7 @@ func stopSequences(raw json.RawMessage) ([]string, error) {
 	}
 	var many []string
 	if err := json.Unmarshal(raw, &many); err != nil {
-		return nil, &ClientError{Message: "stop must be a string or an array of strings"}
+		return nil, &provider.ClientError{Message: "stop must be a string or an array of strings"}
 	}
 	return many, nil
 }

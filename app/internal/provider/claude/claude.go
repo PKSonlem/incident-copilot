@@ -1,4 +1,4 @@
-package provider
+package claude
 
 import (
 	"bytes"
@@ -8,12 +8,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/PKSonlem/incident-copilot/app/internal/provider"
 )
 
 const anthropicVersion = "2023-06-01"
 
-// Claude вызывает Anthropic Messages API, переводя запрос и ответ из формата OpenAI и обратно.
-type Claude struct {
+// Client вызывает Anthropic Messages API, переводя запрос и ответ из формата OpenAI и обратно.
+type Client struct {
 	baseURL string
 	apiKey  string
 	client  *http.Client
@@ -21,9 +23,9 @@ type Claude struct {
 	defaultMaxTokens int
 }
 
-// NewClaude создаёт провайдера Claude.
-func NewClaude(baseURL, apiKey string, defaultMaxTokens int) *Claude {
-	return &Claude{
+// New создаёт провайдера Claude.
+func New(baseURL, apiKey string, defaultMaxTokens int) *Client {
+	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, client: &http.Client{},
 		defaultMaxTokens: defaultMaxTokens,
 	}
@@ -31,10 +33,10 @@ func NewClaude(baseURL, apiKey string, defaultMaxTokens int) *Claude {
 
 // Complete переводит запрос в формат Anthropic и возвращает ответ в формате OpenAI. Ошибки Claude
 // тоже приходят в формате OpenAI, со статусом по правилам гейтвея.
-func (c *Claude) Complete(ctx context.Context, body []byte) (_ Response, err error) {
+func (c *Client) Complete(ctx context.Context, body []byte) (_ provider.Response, err error) {
 	resp, _, err := c.do(ctx, body, false)
 	if err != nil {
-		return Response{}, err
+		return provider.Response{}, err
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
@@ -43,24 +45,24 @@ func (c *Claude) Complete(ctx context.Context, body []byte) (_ Response, err err
 	}()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Response{}, fmt.Errorf("read provider response: %w", err)
+		return provider.Response{}, fmt.Errorf("read provider response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		status, out := translateError(resp.StatusCode, data)
-		return Response{Status: status, Body: out}, nil
+		return provider.Response{Status: status, Body: out}, nil
 	}
 	out, err := translateResponse(data)
 	if err != nil {
-		return Response{}, err
+		return provider.Response{}, err
 	}
-	return Response{Status: http.StatusOK, Body: out}, nil
+	return provider.Response{Status: http.StatusOK, Body: out}, nil
 }
 
 // Stream отдаёт тело в виде OpenAI SSE, переводя события Anthropic по мере поступления.
-func (c *Claude) Stream(ctx context.Context, body []byte) (Stream, error) {
+func (c *Client) Stream(ctx context.Context, body []byte) (provider.Stream, error) {
 	resp, includeUsage, err := c.do(ctx, body, true)
 	if err != nil {
-		return Stream{}, err
+		return provider.Stream{}, err
 	}
 	if resp.StatusCode != http.StatusOK {
 		data, rerr := io.ReadAll(resp.Body)
@@ -68,15 +70,15 @@ func (c *Claude) Stream(ctx context.Context, body []byte) (Stream, error) {
 			rerr = cerr
 		}
 		if rerr != nil {
-			return Stream{}, fmt.Errorf("read provider response: %w", rerr)
+			return provider.Stream{}, fmt.Errorf("read provider response: %w", rerr)
 		}
 		status, out := translateError(resp.StatusCode, data)
-		return Stream{Status: status, Body: io.NopCloser(bytes.NewReader(out))}, nil
+		return provider.Stream{Status: status, Body: io.NopCloser(bytes.NewReader(out))}, nil
 	}
-	return Stream{Status: http.StatusOK, Body: newSSETranslator(resp.Body, includeUsage)}, nil
+	return provider.Stream{Status: http.StatusOK, Body: newSSETranslator(resp.Body, includeUsage)}, nil
 }
 
-func (c *Claude) do(ctx context.Context, body []byte, stream bool) (*http.Response, bool, error) {
+func (c *Client) do(ctx context.Context, body []byte, stream bool) (*http.Response, bool, error) {
 	payload, includeUsage, err := translateRequest(body, stream, c.defaultMaxTokens)
 	if err != nil {
 		return nil, false, err

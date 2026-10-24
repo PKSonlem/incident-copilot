@@ -6,6 +6,7 @@
 - Стандарты ревью: `CODING_STANDARDS.md`
 - Термины проекта: `GLOSSARY.md`
 - Необратимые решения: `docs/adr/`
+- Раскладка пакетов гейтвея и правила зависимостей: `docs/adr/0004-package-layout-and-dependency-rules.md`. Новый код кладётся в пакет по своей ответственности, а не в `httpapi`.
 - Спеки: `SPEC-scaffold.md` (слой 0, делается первым), `SPEC-gateway.md` (слой 1)
 - Спеки и таблицы длинные: читай их инструментом Read кусками, не через `cat` в Bash.
 - Команда проверки (запусти перед каждым PR): `make check` (= `./scripts/check.sh`: go vet, golangci-lint, go test -race). Хук и CI вызывают её же. Включить хук: `make hooks`. Тесты гейтвея поднимают настоящий `redis-server`: он должен быть в PATH (`brew install redis`). `docker compose up` требует переменные `GATEWAY_CLIENT_KEY` и `ANTHROPIC_API_KEY`.

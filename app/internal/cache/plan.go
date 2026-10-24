@@ -1,4 +1,4 @@
-package server
+package cache
 
 import (
 	"crypto/sha256"
@@ -6,24 +6,24 @@ import (
 	"encoding/json"
 )
 
-// cacheHeader — заголовок ответа с состоянием кэша.
-const cacheHeader = "X-Cache"
+// Header — заголовок ответа с состоянием кэша.
+const Header = "X-Cache"
 
-// cacheStatus — значение заголовка X-Cache.
-type cacheStatus string
+// Status — значение заголовка X-Cache.
+type Status string
 
 const (
-	cacheHit    cacheStatus = "HIT"    // ответ взят из кэша
-	cacheMiss   cacheStatus = "MISS"   // запрос кэшируем, записи не было
-	cacheBypass cacheStatus = "BYPASS" // запрос не кэшируем
+	Hit    Status = "HIT"    // ответ взят из кэша
+	Miss   Status = "MISS"   // запрос кэшируем, записи не было
+	Bypass Status = "BYPASS" // запрос не кэшируем
 )
 
 const cacheKeyPrefix = "cache:v1:"
 
-// cachePlan — решение кэша по запросу, принятое до обращения к провайдеру: что писать в X-Cache,
+// Plan — решение кэша по запросу, принятое до обращения к провайдеру: что писать в X-Cache,
 // если ответ не из кэша, и под каким ключом искать и сохранять.
-type cachePlan struct {
-	status cacheStatus // cacheMiss (key задан) или cacheBypass
+type Plan struct {
+	Status Status // Miss (key задан) или Bypass
 	key    string
 }
 
@@ -38,12 +38,12 @@ var keyedFields = []string{
 	"tools", "tool_choice", "parallel_tool_calls", "functions", "function_call",
 }
 
-// planCache решает, кэшировать ли запрос. Кэшируются только запросы с явным temperature=0:
+// NewPlan решает, кэшировать ли запрос. Кэшируются только запросы с явным temperature=0:
 // при другой температуре ответ недетерминирован, и повтор из кэша подменил бы новую
 // генерацию. Запросы с n != 1 тоже обходят кэш: в записи хранится один ответ, а n просит
 // несколько независимых вариантов.
-func planCache(req map[string]json.RawMessage, logicalModel string) cachePlan {
-	bypass := cachePlan{status: cacheBypass}
+func NewPlan(req map[string]json.RawMessage, logicalModel string) Plan {
+	bypass := Plan{Status: Bypass}
 	var temperature float64
 	if err := json.Unmarshal(req["temperature"], &temperature); err != nil || temperature != 0 {
 		return bypass
@@ -70,5 +70,5 @@ func planCache(req map[string]json.RawMessage, logicalModel string) cachePlan {
 		return bypass
 	}
 	sum := sha256.Sum256(canonical)
-	return cachePlan{status: cacheMiss, key: cacheKeyPrefix + hex.EncodeToString(sum[:])}
+	return Plan{Status: Miss, key: cacheKeyPrefix + hex.EncodeToString(sum[:])}
 }

@@ -1,4 +1,4 @@
-package server_test
+package httpapi_test
 
 import (
 	"bufio"
@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
-	"github.com/PKSonlem/incident-copilot/app/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/httpapi"
 )
 
 // --- Claude: устаревшие functions и некорректные tools получают 400 (tools переводятся в #6) ---
@@ -92,7 +92,7 @@ func TestClaudeDefaultMaxTokensComesFromConfig(t *testing.T) {
 	}{"из конфига": {configured: 123, want: 123}, "по умолчанию": {configured: 0, want: 4096}} {
 		t.Run(name, func(t *testing.T) {
 			fa := newFakeAnthropic(t)
-			h, err := server.New(config.Config{
+			h, err := httpapi.New(config.Config{
 				Redis: config.Redis{Addr: startRedis(t)},
 				Providers: []config.Provider{{
 					Name: "anthropic", Kind: "claude", BaseURL: fa.URL, APIKey: anthropicKey, DefaultMaxTokens: tc.configured,
@@ -101,7 +101,7 @@ func TestClaudeDefaultMaxTokensComesFromConfig(t *testing.T) {
 				Clients: []config.Client{{Name: "agent", Key: clientKey}},
 			})
 			if err != nil {
-				t.Fatalf("server.New: %v", err)
+				t.Fatalf("httpapi.New: %v", err)
 			}
 			ts := httptest.NewServer(h)
 			t.Cleanup(ts.Close)
@@ -185,14 +185,14 @@ func newToolCallProvider(t *testing.T) *httptest.Server {
 
 func TestCachedToolCallIsReplayedWithoutEmptyContent(t *testing.T) {
 	provider := newToolCallProvider(t)
-	h, err := server.New(config.Config{
+	h, err := httpapi.New(config.Config{
 		Redis:     config.Redis{Addr: startRedis(t)},
 		Providers: []config.Provider{{Name: "local", Kind: "openai", BaseURL: provider.URL}},
 		Models:    []config.Model{{Name: "local-small", Provider: "local", ProviderModel: "qwen-local"}},
 		Clients:   []config.Client{{Name: "agent", Key: clientKey}},
 	})
 	if err != nil {
-		t.Fatalf("server.New: %v", err)
+		t.Fatalf("httpapi.New: %v", err)
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)

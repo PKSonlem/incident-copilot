@@ -1,4 +1,4 @@
-package server_test
+package httpapi_test
 
 import (
 	"bufio"
@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/PKSonlem/incident-copilot/app/internal/config"
-	"github.com/PKSonlem/incident-copilot/app/internal/server"
+	"github.com/PKSonlem/incident-copilot/app/internal/httpapi"
 )
 
 const (
@@ -131,9 +131,9 @@ func newGateway(t *testing.T, fp *fakeProvider) *httptest.Server {
 		Models:    []config.Model{{Name: "local-small", Provider: "local", ProviderModel: "qwen-local"}},
 		Clients:   []config.Client{{Name: "agent", Key: clientKey}},
 	}
-	h, err := server.New(cfg)
+	h, err := httpapi.New(cfg)
 	if err != nil {
-		t.Fatalf("server.New: %v", err)
+		t.Fatalf("httpapi.New: %v", err)
 	}
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)

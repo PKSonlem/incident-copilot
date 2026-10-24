@@ -1,4 +1,4 @@
-package server_test
+package httpapi_test
 
 import (
 	"io"
