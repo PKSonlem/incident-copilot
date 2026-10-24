@@ -1,0 +1,11 @@
+# Файлы правил: агент не должен менять их незаметно.
+/CLAUDE.md @PKSonlem
+/CODING_STANDARDS.md @PKSonlem
+/docs/adr/ @PKSonlem
+/.golangci.yml @PKSonlem
+/.github/ @PKSonlem
+/.claude/ @PKSonlem
+/scripts/ @PKSonlem
+/Makefile @PKSonlem
+/Dockerfile @PKSonlem
+/compose.yaml @PKSonlem
