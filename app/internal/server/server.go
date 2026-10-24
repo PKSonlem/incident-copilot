@@ -29,26 +29,40 @@ const (
 const maxBodyBytes = 4 << 20
 
 type route struct {
+	name          string
+	kind          string
 	provider      provider.Provider
 	providerModel string
 }
 
+// Значения заголовка X-Complexity и алиас модели, включающий маршрутизацию.
+const (
+	complexityHeader  = "X-Complexity"
+	complexitySimple  = "simple"
+	complexityComplex = "complex"
+	modelAuto         = "auto"
+)
+
 type gateway struct {
-	routes  map[string]route
-	clients []config.Client
-	cache   *responseCache
-	limiter *rateLimiter
+	routes map[string]route
+	// simpleRoute и complexRoute — первые модели конфига с провайдером kind=openai и kind=claude.
+	simpleRoute, complexRoute *route
+	clients                   []config.Client
+	cache                     *responseCache
+	limiter                   *rateLimiter
 }
 
 // New возвращает обработчик гейтвея: live, ready и /v1/chat/completions.
 func New(cfg config.Config) (http.Handler, error) {
 	providers := map[string]provider.Provider{}
+	kinds := map[string]string{}
 	for _, pc := range cfg.Providers {
 		p, err := provider.New(pc.Kind, pc.BaseURL, pc.APIKey, provider.Options{DefaultMaxTokens: pc.EffectiveMaxTokens()})
 		if err != nil {
 			return nil, fmt.Errorf("provider %q: %w", pc.Name, err)
 		}
 		providers[pc.Name] = p
+		kinds[pc.Name] = pc.Kind
 	}
 	g := &gateway{
 		routes:  map[string]route{},
@@ -61,7 +75,14 @@ func New(cfg config.Config) (http.Handler, error) {
 		if !found {
 			return nil, fmt.Errorf("model %q: unknown provider %q", m.Name, m.Provider)
 		}
-		g.routes[m.Name] = route{provider: p, providerModel: m.ProviderModel}
+		rt := route{name: m.Name, kind: kinds[m.Provider], provider: p, providerModel: m.ProviderModel}
+		g.routes[m.Name] = rt
+		switch {
+		case rt.kind == "openai" && g.simpleRoute == nil:
+			g.simpleRoute = &rt
+		case rt.kind == "claude" && g.complexRoute == nil:
+			g.complexRoute = &rt
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /live", respondOK)
@@ -221,10 +242,15 @@ func (g *gateway) prepare(w http.ResponseWriter, r *http.Request) (prepared, *ap
 	if err := json.Unmarshal(req["model"], &model); err != nil {
 		return prepared{}, bad("model must be a string")
 	}
-	rt, found := g.routes[model]
-	if !found {
-		return prepared{}, &apiError{http.StatusNotFound, errNotFound, fmt.Sprintf("model %q not found", model)}
+	complexity := r.Header.Get(complexityHeader)
+	if complexity != "" && complexity != complexitySimple && complexity != complexityComplex {
+		return prepared{}, bad(fmt.Sprintf("%s must be %q or %q", complexityHeader, complexitySimple, complexityComplex))
 	}
+	rt, aerr := g.resolve(model, complexity)
+	if aerr != nil {
+		return prepared{}, aerr
+	}
+	model = rt.name
 	plan := planCache(req, model)
 	req["model"], err = json.Marshal(rt.providerModel)
 	if err != nil {
@@ -235,6 +261,26 @@ func (g *gateway) prepare(w http.ResponseWriter, r *http.Request) (prepared, *ap
 		return prepared{}, &apiError{http.StatusInternalServerError, errAPI, "cannot encode request"}
 	}
 	return prepared{route: rt, body: body, stream: stream, cache: plan}, nil
+}
+
+// resolve выбирает маршрут: конкретное имя модели закрепляет запрос, "auto" и пустое имя
+// включают маршрутизацию по сложности (без заголовка запрос сложный).
+func (g *gateway) resolve(model, complexity string) (route, *apiError) {
+	if model != "" && model != modelAuto {
+		rt, found := g.routes[model]
+		if !found {
+			return route{}, &apiError{http.StatusNotFound, errNotFound, fmt.Sprintf("model %q not found", model)}
+		}
+		return rt, nil
+	}
+	target := g.complexRoute
+	if complexity == complexitySimple {
+		target = g.simpleRoute
+	}
+	if target == nil {
+		return route{}, &apiError{http.StatusInternalServerError, errAPI, "no model is configured for routing"}
+	}
+	return *target, nil
 }
 
 func isTrue(raw json.RawMessage) bool {
